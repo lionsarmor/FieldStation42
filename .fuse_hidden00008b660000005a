@@ -1,0 +1,8 @@
+# EXTRA_MOUNT is only needed if you have a separate directory where your symlinks are pointing to. If you don't have one, just delete this variable.
+EXTRA_MOUNT=/mnt/d/Media/TV:/mnt/d/Media/TV
+
+# This should be set to "docker"
+RUN_MODE=docker
+
+# This should be set to "wsl" if you are using WSL, and "linux" if you are using linux.
+OS_ENV=wsl
