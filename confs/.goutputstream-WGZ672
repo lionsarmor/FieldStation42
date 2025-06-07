@@ -1,0 +1,11 @@
+{
+  "station_conf": {
+    "network_name": "Junk",
+    "network_type": "loop",
+    "channel_number": 80,
+    "runtime_dir": "runtime/junk",
+    "content_dir": "catalog/junk",
+    "catalog_path": "catalog/junk.bin",
+    "schedule_path": "runtime/junk_schedule.bin"
+  }
+}
