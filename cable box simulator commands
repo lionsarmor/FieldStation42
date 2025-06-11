@@ -214,3 +214,18 @@ Save and reboot.
 /home/roddy/FieldStation42/fs42/start_all.sh
 
 
+
+
+
+In order to get a Youtube live streams m3u8 link for the streamy channel download yt-dlp
+
+CD into that folder you saved the yt-dlp.exe and then run:
+yt-dlp -F https://…your_video_url…
+
+There will be IDs listed, select which resolution youd like then run 
+yt-dlp --get-url -f PICKANUMBERFORSTREAMRESOLUTION https://…your_video_url…
+
+Once you do that you should get an output of a long url with the .m3u8 url
+
+Paste that into {"url": "theverylongurl", "duration": 30, "title": "your stream title"}
+

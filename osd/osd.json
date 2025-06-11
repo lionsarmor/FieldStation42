@@ -1,9 +1,19 @@
 [
-	{
-	    "halign": "LEFT",
-	    "valign": "TOP",
-	    "font_size": 50,
-		"text_color": [0, 255, 60, 200],
-		"format_text": "{network_name:<57}{channel_number}"
-	}
+  {
+    "halign": "LEFT",
+    "valign": "TOP",
+    "font_size": 50,
+    "text_color": [0, 255, 60, 200],
+    "text": "{network_name}",
+    "position": { "x": 10, "y": 10 }
+  },
+  {
+    "halign": "RIGHT",
+    "valign": "TOP",
+    "font_size": 50,
+    "text_color": [0, 255, 60, 200],
+    "text": "{channel_number}",
+    "position": { "x": -10, "y": 10 }  // negative x = from right edge
+  }
 ]
+
