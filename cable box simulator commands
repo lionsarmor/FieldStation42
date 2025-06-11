@@ -1,0 +1,216 @@
+#Quick NOTES
+
+this in the schedule manager
+python3 station_42.py
+
+-auto start scripts for boot
+
+cd ~/.config/autostart/
+nautilus ~/.config/autostart/
+
+cd /etc/systemd/system/
+nautilus /etc/systemd/system/
+
+systemctl status change_channel.service
+systemctl start change_channel.service
+systemctl restart change_channel.service
+
+systemctl status fs42.service
+systemctl start fs42.service
+systemctl restart fs42.service
+
+# FieldStation42 Development & Setup Commands
+
+# Activate the Python virtual environment
+source env/bin/activate
+
+# Change into project directory
+cd FieldStation42/
+
+# Build Schedule for single day -w for week
+python3 station_42.py -d
+
+# Rebuild the media catalog
+python3 station_42.py --rebuild_catalog
+
+# Start the channel changer (use arrow keys or numbers)
+python3 change_channel.py
+
+# Start the fullscreen field player
+python3 field_player.py
+
+
+# Enable change_channel.py as a systemd Service (Autostart at Boot)
+
+# 1. Create a systemd unit file:
+sudo nano /etc/systemd/system/change_channel.service
+
+# 2. Paste the following content into the file:
+# ---------------------------------------------------
+[Unit]
+Description=Channel Switching Script
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/roddy/FieldStation42/env/bin/python /home/roddy/FieldStation42/change_channel.py
+WorkingDirectory=/home/roddy/FieldStation42
+User=roddy
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+# ---------------------------------------------------
+
+# ⚠️ Make sure ExecStart matches your full Python virtualenv path.
+
+# 3. Reload systemd and enable the service:
+sudo systemctl daemon-reload
+sudo systemctl enable change_channel.service
+sudo systemctl start change_channel.service
+
+# 4. Optional: Monitor or debug the service
+# Check service status
+systemctl status change_channel.service
+
+# View live logs
+journalctl -u change_channel.service -f
+
+
+# Autostart field_player.py at Login
+
+# 1. Create autostart folder (if it doesn't exist):
+mkdir -p ~/.config/autostart
+
+# 2. Create the desktop entry:
+nano ~/.config/autostart/field_player.desktop
+
+# 3. Paste the following content:
+# ---------------------------------------------------
+[Desktop Entry]
+Type=Application
+Name=Field Player🧠 To keep it that way:
+
+    To enable it on boot (if you haven’t already):
+
+sudo systemctl enable fieldstation42.service
+
+To stop it later:
+
+sudo systemctl stop fieldstation42.service
+
+To restart manually:
+
+sudo systemctl restart fieldstation42.service
+Exec=/home/roddy/FieldStation42/env/bin/python /home/roddy/FieldStation42/field_player.py
+WorkingDirectory=/home/roddy/FieldStation42
+X-GNOME-Autostart-enabled=true
+Terminal=false
+# ---------------------------------------------------
+
+# 4. Save and reboot to test:
+reboot
+
+
+# Keyboard Shortcuts
+
+# Super + Q — Quit current app
+# Super + D — Show/hide desktop
+
+
+
+
+
+
+🧠 To keep it that way:
+
+    To enable it on boot (if you haven’t already):
+
+sudo systemctl enable fieldstation42.service
+
+To stop it later:
+
+sudo systemctl stop fieldstation42.service
+
+To restart manually:
+
+sudo systemctl restart fieldstation42.service
+
+
+
+
+Here’s a straightforward plan to do that with GNOME autostart and systemd user service — no terminal windows visible, no hacking system-wide systemd.
+Step 1: Put your launch scripts in order
+
+    /home/roddy/FieldStation42/fs42/hot_start.sh — launches your player (mpv, etc)
+
+    /home/roddy/FieldStation42/fs42/change_channel.py — script for keypress listening
+
+Make sure both have execute permissions:
+
+chmod +x /home/roddy/FieldStation42/fs42/hot_start.sh
+chmod +x /home/roddy/FieldStation42/fs42/change_channel.py
+
+Step 2: Create a launcher script that runs both without terminal windows
+
+Create a simple shell script to run both in background (change directory paths accordingly):
+
+nano /home/roddy/FieldStation42/fs42/start_all.sh
+
+Put this inside:
+
+#!/bin/bash
+# Wait a little to ensure graphical session is ready
+sleep 10
+
+# Export display so GUI works
+export DISPLAY=:0
+export XAUTHORITY=/home/roddy/.Xauthority
+
+# Run hot_start.sh (which launches mpv)
+bash /home/roddy/FieldStation42/fs42/hot_start.sh &
+
+# Run change_channel.py to capture keypresses (in background)
+python3 /home/roddy/FieldStation42/fs42/change_channel.py &
+
+Save and make executable:
+
+chmod +x /home/roddy/FieldStation42/fs42/start_all.sh
+
+Step 3: Use GNOME Startup Applications to launch this script on login
+
+Create a .desktop file to autostart your setup.
+
+mkdir -p ~/.config/autostart
+nano ~/.config/autostart/fieldstation42.desktop
+
+Paste this:
+
+[Desktop Entry]
+Type=Application
+Exec=/home/roddy/FieldStation42/fs42/start_all.sh
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=FieldStation42 Player and Channel Controller
+Comment=Start player and channel change listener on login
+
+Save it.
+Step 4: Optional — Set Pop!_OS to auto-login roddy user (skip password prompt)
+
+Edit GDM config:
+
+sudo nano /etc/gdm3/custom.conf
+
+Uncomment and set:
+
+[daemon]
+AutomaticLoginEnable = true
+AutomaticLogin = roddy
+
+Save and reboot.
+
+
+/home/roddy/FieldStation42/fs42/start_all.sh
+
+
