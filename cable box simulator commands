@@ -229,3 +229,7 @@ Once you do that you should get an output of a long url with the .m3u8 url
 
 Paste that into {"url": "theverylongurl", "duration": 30, "title": "your stream title"}
 
+clear chromium config for weather channel
+rm -rf ~/.config/chromium
+rm -rf ~/.config/chromium/Default/Singleton*^C
+

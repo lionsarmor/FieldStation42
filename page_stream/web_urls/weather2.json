@@ -1,0 +1,9 @@
+{
+  "channel_id": "weather2",
+  "channel_name": "Weather2",
+  "source_url": "https://weatherstar.netbymatt.com/?hazards-checkbox=true&current-weather-checkbox=true&latest-observations-checkbox=true&hourly-checkbox=true&hourly-graph-checkbox=true&travel-checkbox=true&regional-forecast-checkbox=true&local-forecast-checkbox=true&extended-forecast-checkbox=true&almanac-checkbox=true&spc-outlook-checkbox=true&radar-checkbox=true&settings-wide-checkbox=false&settings-kiosk-checkbox=true&settings-scanLines-checkbox=true&settings-speed-select=1.00&settings-units-select=us&latLonQuery=Rawlins%2C+WY&latLon=%7B%22lat%22%3A41.7890116%2C%22lon%22%3A-107.2304671%7D",
+  "location": {
+    "lat": "41.5875",
+    "lon": "-109.2029"
+  }
+}

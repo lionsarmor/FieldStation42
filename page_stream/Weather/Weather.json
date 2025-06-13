@@ -1,0 +1,19 @@
+{
+  "station_conf": {
+    "network_name": "Weather",
+    "network_type": "streaming",
+    "channel_number": 88,
+    "runtime_dir": "runtime/weather",
+    "content_dir": "catalog/weather_content",
+    "catalog_path": "catalog/weather.bin",
+    "schedule_path": "runtime/weather_schedule.bin",
+    "network_long_name": "Weather Channel",
+    "streams": [
+      {
+        "url": "http://localhost:8090/weather/index.m3u8",
+        "duration": 36000
+      }
+    ]
+  }
+}
+
