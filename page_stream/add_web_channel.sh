@@ -1,6 +1,7 @@
 #!/bin/bash
 # add_web_channel.sh
 # Creates a new web streaming channel configuration with location awareness
+
 set -e
 
 # ---------------------
@@ -36,22 +37,22 @@ if [[ "$4" == "--force" ]]; then
   FORCE=true
 fi
 
-# Sanitize channel name for file/URL use
+# ---------------------
+# Sanitization & Derived Paths
+# ---------------------
 CHANNEL_ID=$(echo "$CHANNEL_NAME" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_')
 
-# Paths
 CONF_DIR="../confs"
-HLS_DIR="../hls/${CHANNEL_ID}"
+HLS_DIR="../page_stream/hls/${CHANNEL_ID}"
 CONF_FILE="${CONF_DIR}/web_${CHANNEL_ID}.json"
 URL_STORE_DIR="./web_urls"
 URL_STORE_FILE="${URL_STORE_DIR}/${CHANNEL_ID}.json"
+PORT=$((8000 + CHANNEL_NUMBER))
 
 # Create necessary directories
-mkdir -p "$CONF_DIR"
-mkdir -p "$HLS_DIR"
-mkdir -p "$URL_STORE_DIR"
+mkdir -p "$CONF_DIR" "$HLS_DIR" "$URL_STORE_DIR"
 
-# Check if config already exists
+# Check for overwrite
 if [[ -f "$CONF_FILE" && "$FORCE" == false ]]; then
   echo "[ERROR] Configuration file '$CONF_FILE' already exists. Use --force to overwrite."
   exit 1
@@ -94,7 +95,7 @@ cat > "$CONF_FILE" << EOF
     "network_long_name": "${CHANNEL_NAME} Channel",
     "streams": [
       {
-        "url": "http://localhost:8090/${CHANNEL_ID}/index.m3u8",
+        "url": "http://localhost:${PORT}/hls/${CHANNEL_ID}/index.m3u8",
         "duration": 36000
       }
     ]
@@ -120,8 +121,9 @@ EOF
 # ---------------------
 # Final Output
 # ---------------------
-echo "[SUCCESS] Configuration file created at: $CONF_FILE"
-echo "[INFO] HLS output will be saved to: $HLS_DIR"
-echo "[INFO] Web stream URL stored at: $URL_STORE_FILE"
-echo "[INFO] Use start_web_stream.sh \"$CHANNEL_NAME\" to launch the stream."
+echo "[SUCCESS] Configuration created for web channel '$CHANNEL_NAME'"
+echo "  → Config file:       $CONF_FILE"
+echo "  → HLS output path:   $HLS_DIR"
+echo "  → Stream metadata:   $URL_STORE_FILE"
+echo "  → Launch with:       ./start_web_stream.sh \"$CHANNEL_NAME\""
 

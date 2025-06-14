@@ -1,6 +1,6 @@
 #!/bin/bash
 # launch_fs42_with_web.sh
-# Auto-launch all web channels, then FieldStation42 core
+# Launches all web-based channels, then FieldStation42 core
 
 set -e
 
@@ -22,31 +22,35 @@ export XDG_RUNTIME_DIR=/run/user/1000
 ########################################
 
 CONF_DIR="./confs"
-echo "[FS42] Searching for web_* channel configs in $CONF_DIR..."
+LOG_DIR="./logs"
+mkdir -p "$LOG_DIR"
+
+echo "[FS42] Searching for web_* configs in $CONF_DIR..."
 
 for conf in "$CONF_DIR"/web_*.json; do
-  [[ -e "$conf" ]] || continue  # Skip if no match
+  [[ -e "$conf" ]] || continue
+
   CHANNEL_ID=$(basename "$conf" | sed -E 's/^web_(.+)\.json$/\1/')
-  CHANNEL_NAME=$(echo "$CHANNEL_ID" | tr '_' ' ')
-  echo "[FS42] Launching web stream: $CHANNEL_NAME"
-  ./page_stream/start_web_stream.sh "$CHANNEL_NAME" &
-  sleep 1
+  echo "[FS42] Launching web stream: $CHANNEL_ID"
+
+  ./page_stream/start_web_stream.sh "$CHANNEL_ID" > "$LOG_DIR/web_${CHANNEL_ID}.log" 2>&1 &
+  sleep 2  # Give some time between launches
 done
 
 ########################################
-# 2. Launch FieldStation42 Core
+# 2. Launch FieldStation42 Core Components
 ########################################
 
 echo "[FS42] Launching FieldPlayer..."
-python3 field_player.py &
+python3 field_player.py > "$LOG_DIR/field_player.log" 2>&1 &
 
-sleep 3  # Let MPV initialize
+sleep 3  # Let mpv initialize
 
 echo "[FS42] Launching channel changer..."
-python3 fs42/change_channel.py &
+python3 fs42/change_channel.py > "$LOG_DIR/channel_changer.log" 2>&1 &
 
 echo "[FS42] Launching OSD..."
-python3 fs42/osd/main.py &
+python3 fs42/osd/main.py > "$LOG_DIR/osd.log" 2>&1 &
 
 sleep 2
 
