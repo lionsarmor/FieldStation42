@@ -180,3 +180,4 @@ cython_debug/
 hls/
 web_urls/
 
+.fuse_hidden*
