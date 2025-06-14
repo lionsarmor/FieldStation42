@@ -65,21 +65,6 @@ if [[ -f "$CONF_FILE" && "$FORCE" == false ]]; then
 fi
 
 # ---------------------
-# Get Location (lat/lon)
-# ---------------------
-echo "[INFO] Retrieving location from ipinfo.io..."
-LOCATION_JSON=$(curl -s https://ipinfo.io/json || echo "")
-LOC=$(echo "$LOCATION_JSON" | jq -r '.loc' 2>/dev/null || echo "")
-LAT="null"; LON="null"
-
-if [[ -n "$LOC" && "$LOC" != "null" ]]; then
-  LAT="${LOC%%,*}"
-  LON="${LOC##*,}"
-else
-  echo "[WARN] Location unavailable or invalid."
-fi
-
-# ---------------------
 # Write FieldStation42 Channel Config
 # ---------------------
 cat > "$CONF_FILE" << EOF
@@ -110,11 +95,7 @@ cat > "$URL_STORE_FILE" << EOF
 {
   "channel_id": "$CHANNEL_ID",
   "channel_name": "$CHANNEL_NAME",
-  "source_url": "$URL",
-  "location": {
-    "lat": "$LAT",
-    "lon": "$LON"
-  }
+  "source_url": "$URL"
 }
 EOF
 
