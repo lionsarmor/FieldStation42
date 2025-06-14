@@ -178,3 +178,5 @@ cython_debug/
 
 #page_stream HLS folder
 hls/
+
+.fuse_hidden0000000300000b93
