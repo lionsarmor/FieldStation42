@@ -1,6 +1,6 @@
 #!/bin/bash
 # add_web_channel.sh
-# Creates a new web streaming channel configuration with location awareness
+# Creates a new web streaming channel configuration
 
 set -euo pipefail
 
