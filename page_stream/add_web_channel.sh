@@ -2,7 +2,7 @@
 # add_web_channel.sh
 # Creates a new web streaming channel configuration with location awareness
 
-set -e
+set -euo pipefail
 
 # ---------------------
 # Dependency Check
@@ -11,7 +11,6 @@ REQUIRED_CMDS=("jq" "curl" "chromium-browser" "ffmpeg" "Xvfb" "python3" "wmctrl"
 for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "[ERROR] Required command '$cmd' is not installed or not in PATH."
-    echo "Please install it before running this script."
     exit 1
   fi
 done
@@ -33,54 +32,55 @@ URL="$1"
 CHANNEL_NAME="$2"
 CHANNEL_NUMBER="$3"
 FORCE=false
-if [[ "$4" == "--force" ]]; then
+if [[ "${4:-}" == "--force" ]]; then
   FORCE=true
 fi
 
-# ---------------------
-# Sanitization & Derived Paths
-# ---------------------
-CHANNEL_ID=$(echo "$CHANNEL_NAME" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_')
+# Validate channel number is numeric
+if ! [[ "$CHANNEL_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "[ERROR] Channel number must be an integer."
+  exit 1
+fi
 
-CONF_DIR="../confs"
-HLS_DIR="../page_stream/hls/${CHANNEL_ID}"
+# ---------------------
+# Paths
+# ---------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_DIR="$SCRIPT_DIR/../confs"
+URL_STORE_DIR="$SCRIPT_DIR/web_urls"
+HLS_DIR="$SCRIPT_DIR/../page_stream/hls/${CHANNEL_NAME,,}"
+CHANNEL_ID=$(echo "$CHANNEL_NAME" | tr '[:upper:] ' '[:lower:]_' | tr -cd 'a-z0-9_')
 CONF_FILE="${CONF_DIR}/web_${CHANNEL_ID}.json"
-URL_STORE_DIR="./web_urls"
 URL_STORE_FILE="${URL_STORE_DIR}/${CHANNEL_ID}.json"
 PORT=$((8000 + CHANNEL_NUMBER))
 
-# Create necessary directories
 mkdir -p "$CONF_DIR" "$HLS_DIR" "$URL_STORE_DIR"
 
-# Check for overwrite
+# ---------------------
+# Overwrite Check
+# ---------------------
 if [[ -f "$CONF_FILE" && "$FORCE" == false ]]; then
-  echo "[ERROR] Configuration file '$CONF_FILE' already exists. Use --force to overwrite."
+  echo "[ERROR] Configuration '$CONF_FILE' already exists. Use --force to overwrite."
   exit 1
 fi
 
 # ---------------------
 # Get Location (lat/lon)
 # ---------------------
-echo "[INFO] Retrieving location data..."
-LOCATION_JSON=$(curl -s https://ipinfo.io/json)
-if [[ -z "$LOCATION_JSON" ]]; then
-  echo "[WARNING] Could not retrieve location data. Proceeding without location."
-  LAT="null"
-  LON="null"
+echo "[INFO] Retrieving location from ipinfo.io..."
+LOCATION_JSON=$(curl -s https://ipinfo.io/json || echo "")
+LOC=$(echo "$LOCATION_JSON" | jq -r '.loc' 2>/dev/null || echo "")
+LAT="null"; LON="null"
+
+if [[ -n "$LOC" && "$LOC" != "null" ]]; then
+  LAT="${LOC%%,*}"
+  LON="${LOC##*,}"
 else
-  LOC=$(echo "$LOCATION_JSON" | jq -r '.loc' || echo "")
-  if [[ "$LOC" == "" || "$LOC" == "null" ]]; then
-    echo "[WARNING] Location data not found in response."
-    LAT="null"
-    LON="null"
-  else
-    LAT=$(echo "$LOC" | cut -d',' -f1)
-    LON=$(echo "$LOC" | cut -d',' -f2)
-  fi
+  echo "[WARN] Location unavailable or invalid."
 fi
 
 # ---------------------
-# Write Full Channel Config
+# Write FieldStation42 Channel Config
 # ---------------------
 cat > "$CONF_FILE" << EOF
 {
@@ -104,7 +104,7 @@ cat > "$CONF_FILE" << EOF
 EOF
 
 # ---------------------
-# Write URL Info for page_stream/start_web_stream.sh
+# Write Source URL Info
 # ---------------------
 cat > "$URL_STORE_FILE" << EOF
 {
@@ -119,11 +119,11 @@ cat > "$URL_STORE_FILE" << EOF
 EOF
 
 # ---------------------
-# Final Output
+# Output Summary
 # ---------------------
-echo "[SUCCESS] Configuration created for web channel '$CHANNEL_NAME'"
-echo "  → Config file:       $CONF_FILE"
-echo "  → HLS output path:   $HLS_DIR"
-echo "  → Stream metadata:   $URL_STORE_FILE"
-echo "  → Launch with:       ./start_web_stream.sh \"$CHANNEL_NAME\""
+echo "[SUCCESS] Web channel created:"
+echo "  → Config file:      $(realpath "$CONF_FILE")"
+echo "  → Stream directory: $(realpath "$HLS_DIR")"
+echo "  → Source info:      $(realpath "$URL_STORE_FILE")"
+echo "  → Launch with:      ./start_web_stream.sh \"$CHANNEL_NAME\""
 
