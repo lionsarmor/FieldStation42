@@ -179,3 +179,9 @@ cython_debug/
 #page stream needs to ignore saved stream files 
 hls/
 .fuse_hidden*
+#page stream needs to ignore saved stream files 
+hls/
+.fuse_hidden*
+web_urls/
+
+.fuse_hidden*
