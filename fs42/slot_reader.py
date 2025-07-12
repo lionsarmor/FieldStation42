@@ -4,7 +4,6 @@ import copy
 import random
 from fs42 import timings
 
-
 class SlotReader:
     @staticmethod
     def get_tag(conf, when: datetime):
@@ -58,7 +57,7 @@ class SlotReader:
 
     @staticmethod
     def smooth_tags(conf):
-        # this function smooths tags through slot boundaries - so if not specified
+        # this function smooths tags through slot boundaries - so if not specified will use previous slots tag.
         last_tag = None
         smoothed = copy.deepcopy(conf)
         for day_index in timings.DAYS:

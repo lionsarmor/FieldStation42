@@ -9,6 +9,7 @@ from fs42 import timings
 class StationManager(object):
     # the borg singleton pattern
     __we_are_all_one = {}
+    _initialized = False
 
     # private-ish
     __overwatch = {
@@ -20,12 +21,14 @@ class StationManager(object):
         "break_duration": 120,
     }
 
-    __filechecks = ["sign_off_video", "off_air_video", "standby_image"]
+    __filechecks = ["sign_off_video", "off_air_video", "standby_image", "be_right_back_media"]
+
+    __main_config_path = "confs/main_config.json"
 
     # public visible - be careful
     stations = []
-    no_catalogs = {"guide", "streaming"}
-    main_config = "confs/main_config.json"
+    no_catalog = {"guide", "streaming"}
+    no_schedule = {"guide", "streaming"}
 
     # NOTE: This is the borg singleton pattern - __we_are_all_one
     def __new__(cls, *args, **kwargs):
@@ -34,29 +37,49 @@ class StationManager(object):
         return obj
 
     def __init__(self):
-        if not len(self.stations):
-            self.server_conf = {
-                "channel_socket": "runtime/channel.socket",
-                "status_socket": "runtime/play_status.socket",
-                "day_parts": {
-                    "morning": range(6, 10),
-                    "daytime": range(10, 18),
-                    "prime": range(18, 23),
-                    "late": [23, 0, 1, 2],
-                    "overnight": range(2, 6),
-                },
-                "time_format": "%H:%M",
-                "date_time_format": "%Y-%m-%dT%H:%M:%S",
-            }
-            self._number_index = {}
-            self._name_index = {}
-            self.load_main_config()
-            self.load_json_stations()
+        self.__dict__ = self.__we_are_all_one
+        if not self._initialized:
+            self._initialized = True
+            if not len(self.stations):
+                self.server_conf = {
+                    "channel_socket": "runtime/channel.socket",
+                    "status_socket": "runtime/play_status.socket",
+                    "day_parts": {
+                        "morning": range(6, 10),
+                        "daytime": range(10, 18),
+                        "prime": range(18, 23),
+                        "late": [23, 0, 1, 2],
+                        "overnight": range(2, 6),
+                    },
+                    "time_format": "%H:%M",
+                    "date_time_format": "%Y-%m-%dT%H:%M:%S",
+                    "db_path": "runtime/fs42_fluid.db",
+                    "start_mpv": True
+                }
+                self._number_index = {}
+                self._name_index = {}
+                self.load_main_config()
+                self.load_json_stations()
 
-        for i in range(len(self.stations)):
-            station = self.stations[i]
-            if station["network_type"] == "standard":
-                self.stations[i] = SlotReader.smooth_tags(station)
+            for i in range(len(self.stations)):
+                station = self.stations[i]
+                if station["network_type"] == "standard":
+                    self.stations[i] = SlotReader.smooth_tags(station)
+
+                if station["network_type"] == "guide":
+                    logging.getLogger().info("Loading and checking guide channel")
+                    from fs42.guide_tk import GuideWindowConf
+
+                    gconf = GuideWindowConf()
+                    errors = gconf.check_config(station)
+                    if len(errors):
+                        logging.getLogger().error("Errors found in Guide Channel configuration:")
+                        for err in errors:
+                            logging.getLogger().error(err)
+                        logging.getLogger().error("Please check your configuration and try agian.")
+                        exit(-1)
+                    else:
+                        logging.getLogger().info("Guide channel checks completed.")
 
     def station_by_name(self, name):
         if name in self._name_index:
@@ -81,14 +104,16 @@ class StationManager(object):
 
     def load_main_config(self):
         _l = logging.getLogger("STATIONMANAGER")
-        if os.path.exists(StationManager.main_config):
-            with open(StationManager.main_config) as f:
+        if os.path.exists(StationManager.__main_config_path):
+            with open(StationManager.__main_config_path) as f:
                 try:
+                    to_check = ["channel_socket", "status_socket", "time_format", "start_mpv", "db_path"]
                     d = json.load(f)
-                    if "channel_socket" in d:
-                        self.server_conf["channel_socket"] = d["channel_socket"]
-                    if "status_socket" in d:
-                        self.server_conf["status_socket"] = d["status_socket"]
+
+                    for key in to_check:
+                        if key in d:
+                            self.server_conf[key] = d[key]
+
                     if "day_parts" in d:
                         new_parts = {}
                         for key in d["day_parts"]:
@@ -109,25 +134,17 @@ class StationManager(object):
                                     hour += 1
                                 new_parts[key] = hours
                         self.server_conf["day_parts"] = new_parts
+
                     if "date_time_format" not in d:
                         # check the environment variable or set default then
                         self.server_conf["date_time_format"] = os.environ.get("FS42_TS", "%Y-%m-%dT%H:%M:%S")
                     else:
                         self.server_conf["date_time_format"] = d["date_time_format"]
-                    if "time_format" in d:
-                        self.server_conf["time_format"] = d["time_format"]
-                    else:
-                        self.server_conf["time_format"] = "%H:%M"
-
-                    if "start_mpv" in d:
-                        self.server_conf["start_mpv"] = d["start_mpv"]
-                    else:
-                        self.server_conf["start_mpv"] = True
 
                 except Exception as e:
                     print(e)
                     _l.exception(e)
-                    _l.error(f"Error loading main config overrides from {StationManager.main_config}")
+                    _l.error(f"Error loading main config overrides from {StationManager.__main_config_path}")
                     exit(-1)
         # else skip, no over rides
 
@@ -136,7 +153,7 @@ class StationManager(object):
         cfiles = glob.glob("confs/*.json")
         station_buffer = []
         for fname in cfiles:
-            if fname != StationManager.main_config:
+            if fname != StationManager.__main_config_path:
                 with open(fname) as f:
                     try:
                         d = json.load(f)
@@ -194,6 +211,18 @@ class StationManager(object):
                             clip_dict[clip_tag] = {"tags": clip_tag, "duration": target_seconds}
 
                         d["station_conf"]["clip_shows"] = clip_dict
+
+                        # add some metadata that we can use later
+                        if d["station_conf"]["network_type"] in self.no_catalog:
+                            d["station_conf"]["_has_catalog"] = False
+                        else:
+                            d["station_conf"]["_has_catalog"] = True
+
+                        if d["station_conf"]["network_type"] in self.no_schedule:
+                            d["station_conf"]["_has_schedule"] = False
+                        else:
+                            d["station_conf"]["_has_schedule"] = True
+
                         station_buffer.append(d["station_conf"])
 
                     except Exception as e:

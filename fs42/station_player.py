@@ -10,12 +10,12 @@ import os
 from python_mpv_jsonipc import MPV
 
 from fs42.guide_tk import guide_channel_runner, GuideCommands
-from fs42.reception import ReceptionStatus
+from fs42.reception import ReceptionStatus, HLScrambledVideoFilter, DiagonalScrambledVideoFilter, ColorInvertedScrambledVideoFilter
 from fs42.liquid_manager import LiquidManager, PlayPoint, ScheduleNotFound, ScheduleQueryNotInBounds
 
 from fs42.liquid_schedule import LiquidSchedule
 from fs42.station_manager import StationManager
-
+from fs42.slot_reader import SlotReader
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
 
 
@@ -57,7 +57,6 @@ class PlayStatus(Enum):
     SUCCESS = 3
     CHANNEL_CHANGE = 4
 
-
 class PlayerOutcome:
     def __init__(self, status=PlayStatus.SUCCESS, payload=None):
         self.status = status
@@ -65,6 +64,19 @@ class PlayerOutcome:
 
 
 class StationPlayer:
+
+    scramble_effects = {
+        "horizontal_line" : "lavfi=[geq='if(mod(floor(Y/4),2),p(X,Y+20*sin(2*PI*X/50)),p(X,Y))']",
+        "diagonal_lines" : "lavfi=[geq='p(X+10*sin(2*PI*Y/30),Y)']",
+        "static_overlay" : "lavfi=[geq='if(gt(random(X+Y*W),0.85),128+127*random(X*Y),if(mod(floor(Y/4),2),p(X+20,Y),p(X,Y)))']", 
+        "pixel_block" : "lavfi=[scale=160:120,scale=640:480:flags=neighbor,geq='if(gt(random(floor(X/40)*floor(Y/30)),0.7),128,p(X,Y))']",
+        "color_inversion" : "lavfi=[geq='if(mod(floor(Y/16),2),255-p(X,Y),p(X,Y))']", 
+        "severe_noise" : "lavfi=[geq='if(gt(random(X*Y),0.7),random(255),p(X,Y))']",
+        "wavy" : "lavfi=[geq='p(X+15*sin(2*PI*Y/40),Y+10*cos(2*PI*X/60))']",
+        "random_block" : "lavfi=[geq='if(gt(random(floor(X/20)*floor(Y/20)),0.6),p(X+random(100)-20,Y+random(70)-20),p(X,Y))']"
+    }
+
+
     def __init__(self, station_config, mpv=None):
         self._l = logging.getLogger("FieldPlayer")
 
@@ -90,6 +102,8 @@ class StationPlayer:
         self.index = 0
         self.reception = ReceptionStatus()
         self.current_playing_file_path = None
+        self.skip_reception_check = False
+        self.scrambler = None
 
     def show_text(self, text, duration=4):
         self.mpv.command("show-text", text, duration)
@@ -113,12 +127,12 @@ class StationPlayer:
     def play_file(self, file_path, file_duration=None, current_time=None, is_stream=False):
         try:
             if os.path.exists(file_path) or is_stream:
-                self._l.info(f"%%%Attempting to play {file_path}")
+                self._l.debug(f"%%%Attempting to play {file_path}")
                 self.current_playing_file_path = file_path
                 basename = os.path.basename(file_path)
                 title, _ = os.path.splitext(basename)
                 if self.station_config:
-                    self._l.info("%%%Got station config, updating status socket")
+                    self._l.debug("Got station config, updating status socket")
                     if "date_time_format" in StationManager().server_conf:
                         ts_format = StationManager().server_conf["date_time_format"]
                     else:
@@ -144,6 +158,17 @@ class StationPlayer:
 
                 if "panscan" in self.station_config:
                     self.mpv.panscan = self.station_config["panscan"]
+                else:
+                    self.mpv.panscan = 0.0
+
+                if "video_keepaspect" in self.station_config:
+                    self.mpv.keepaspect = self.station_config["video_keepaspect"]
+                else:
+                    self.mpv.keepaspect = True
+
+                self._apply_vfx(datetime.datetime.now())
+
+                    # self.mpv.vf = "lavfi=[]"  
                 self._l.info(f"playing {file_path}")
                 self.mpv.play(file_path)
                 self.mpv.wait_for_property("duration")
@@ -161,6 +186,37 @@ class StationPlayer:
                 f"Encountered unknown error attempting to play {file_path} - please check your configurations."
             )
             return False
+
+    def _apply_vfx(self, current_time):
+        vfx = None
+        if "video_scramble_fx" in self.station_config:
+            vfx = self.station_config["video_scramble_fx"]
+        
+        # check if one is set on the slot and override if so
+        slot = SlotReader.get_slot(self.station_config, current_time)
+        if slot and "video_scramble_fx" in slot:
+            if slot["video_scramble_fx"] in self.scramble_effects:
+                vfx = slot["video_scramble_fx"]
+            else:
+                vfx = None
+
+        
+        if vfx:
+            if vfx in self.scramble_effects:
+                self.mpv.vf = self.scramble_effects[vfx]
+                self.skip_reception_check = True  
+                if vfx == "horizontal_line":
+                    self.scrambler = HLScrambledVideoFilter()
+                elif vfx == "diagonal_lines":
+                    self.scrambler = DiagonalScrambledVideoFilter()
+                elif vfx == "color_inversion":
+                    self.scrambler = ColorInvertedScrambledVideoFilter()
+            else:
+                self._l.warning(f"Scrambler effect '{self.station_config['video_scramble_fx']}' does not exist.")  
+        else:                
+            self.skip_reception_check = False
+            self.mpv.vf = ""
+            self.scrambler = None
 
     def play_image(self, duration):
         pass
@@ -254,7 +310,12 @@ class StationPlayer:
                     keep_waiting = True
                     stop_time = datetime.datetime.now() + datetime.timedelta(seconds=entry.duration - initial_skip)
                     while keep_waiting:
-                        self.update_reception()
+                        if not self.skip_reception_check:
+                            self.update_reception()
+                        else:
+                            if self.scrambler:
+                                self.mpv.vf = self.scrambler.update_filter()
+                                
                         now = datetime.datetime.now()
 
                         if now >= stop_time:
