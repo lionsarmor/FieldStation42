@@ -1,6 +1,7 @@
 import os
 import sys
 import datetime
+import glob
 
 sys.path.append(os.getcwd())
 
@@ -36,6 +37,7 @@ class GuideWindowConf:
 
         self.network_font_family = "Arial"
         self.network_font_size = 12
+        self.network_width_divisor = 6.0
 
         self.schedule_font_family = "Arial"
         self.schedule_font_size = 12
@@ -49,19 +51,50 @@ class GuideWindowConf:
         self.footer_height = 50
 
         self.schedule_row_count = 3
+        self.schedule_col_count = 3
 
         self.play_sound = False
         self.sound_to_play = None
-        self.normalize_title = True
+        self.normalize_titles = True
+
+        self.scroll_speed = 1.0
+
+        # Ratio of top section height to total height (0.0 to 1.0)
+        # 0.5 = 50/50 split, 0.3 = 30% top / 70% bottom, etc.
+        self.top_section_ratio = 0.5
+
+        # Row height constraints for responsive sizing
+        self.target_row_height = 60  # Target height for schedule rows
+        self.min_row_height = 40     # Minimum height for schedule rows
+        self.max_row_height = 80     # Maximum height for schedule rows
 
         self._calc_internals()
 
     def _calc_internals(self):
         self.half_h = self.height / 2
         self.half_w = self.width / 2
-        self.network_w = self.width / 6
-        self.sched_w = (self.width - self.network_w) / self.schedule_row_count
-        self.sched_h = self.half_h / (1 + self.schedule_row_count)
+
+        # Calculate section heights based on configurable ratio
+        self.top_section_height = self.height * self.top_section_ratio
+        self.bottom_section_height = self.height * (1.0 - self.top_section_ratio)
+
+        self.network_w = self.width / self.network_width_divisor
+        self.sched_w = (self.width - self.network_w) / self.schedule_col_count
+
+        # Calculate responsive row height with constraints
+        # First, calculate how much space is available for rows (minus the header row)
+        available_height = self.bottom_section_height
+
+        # Try to use target row height for header + rows
+        total_rows = 1 + self.schedule_row_count  # 1 header + schedule rows
+        calculated_height = available_height / total_rows
+
+        # Constrain row height to min/max bounds
+        self.sched_h = max(self.min_row_height, min(self.max_row_height, calculated_height))
+
+        # Calculate how many visible rows we can actually fit
+        self.visible_row_count = int((available_height - self.sched_h) / self.sched_h)
+
         self._message_font = (self.message_font_family, self.message_font_size)
         self._schedule_font = (self.schedule_font_family, self.schedule_font_size)
         self._network_font = (self.network_font_family, self.network_font_size)
@@ -76,9 +109,26 @@ class GuideWindowConf:
     def check_config(self, merge_conf):
         """Note: this should only be called from the startup checker since it merges the conf again"""
         self.merge_config(merge_conf)
-        to_check = self.images
-        if self.play_sound:
-            to_check.append(self.sound_to_play) 
+        to_check = self.images.copy()
+
+        # Check sound_to_play - can be a string (file or directory) or a list of files
+        if self.play_sound and self.sound_to_play:
+            if isinstance(self.sound_to_play, list):
+                # It's a list - check each file
+                for sound_file in self.sound_to_play:
+                    to_check.append(sound_file)
+            elif isinstance(self.sound_to_play, str):
+                # It's a string - could be a file or directory
+                if os.path.isdir(self.sound_to_play):
+                    # Directory path - check if it has any mp3 files
+                    mp3_files = glob.glob(os.path.join(self.sound_to_play, "*.mp3"))
+                    if not mp3_files:
+                        errors = [f"Guide channel directory {self.sound_to_play} exists but contains no .mp3 files"]
+                        return errors
+                else:
+                    # Single file path - add to check list
+                    to_check.append(self.sound_to_play)
+
         errors = []
         for fp in to_check:
             if not os.path.exists(fp):
@@ -105,9 +155,9 @@ class AdFrame(tk.Frame):
     def __init__(self, parent, conf):
         super().__init__(parent, bg=conf.top_bg)
 
-        self.lbl_v = tk.Label(self, text="Video Placeholder", bg="black", fg="white")
+        self.lbl_v = tk.Label(self, text="Video Placeholder", bg=conf.top_bg, fg="white")
 
-        self.lbl_v.place(x=conf.pad, y=conf.pad, width=conf.half_w - conf.pad * 2, height=conf.half_h - conf.pad * 2)
+        self.lbl_v.place(x=conf.pad, y=conf.pad, width=conf.half_w - conf.pad * 2, height=conf.top_section_height - conf.pad * 2)
 
         self.photo = None
         self.image_index = 0
@@ -116,10 +166,10 @@ class AdFrame(tk.Frame):
             self, text="This is the message\nplaceholder", bg=conf.top_bg, fg="white", font=conf._message_font
         )
         self.lbl_messages.place(
-            x=conf.pad + conf.half_w, y=conf.pad, width=conf.half_w - conf.pad * 2, height=conf.half_h - conf.pad * 2
+            x=conf.pad + conf.half_w, y=conf.pad, width=conf.half_w - conf.pad * 2, height=conf.top_section_height - conf.pad * 2
         )
 
-        self.place(x=0, y=0, height=conf.height / 2, width=conf.width)
+        self.place(x=0, y=0, height=conf.top_section_height, width=conf.width)
         self.conf = conf
         self.message_index = 0
         self.rotate_message()
@@ -134,10 +184,13 @@ class AdFrame(tk.Frame):
         if len(self.conf.images):
             try:
                 as_img = Image.open(self.conf.images[self.image_index])
-                resized = as_img.resize(
-                    (int(self.conf.half_w - self.conf.pad * 2), int(self.conf.half_h - self.conf.pad * 2))
-                )
-                self.photo = ImageTk.PhotoImage(resized)
+                # Calculate maximum size for the image area
+                max_width = int(self.conf.half_w - self.conf.pad * 2)
+                max_height = int(self.conf.top_section_height - self.conf.pad * 2)
+
+                # Use thumbnail to preserve aspect ratio (fits within max size)
+                as_img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                self.photo = ImageTk.PhotoImage(as_img)
 
                 self.lbl_v.configure(image=self.photo)
 
@@ -146,8 +199,8 @@ class AdFrame(tk.Frame):
                     self.image_index = 0
             except Exception as e:
                 print(e)
-                print("Error while loading images to guide channel.")
-                print("Do you have images specified in the guide configuration that don't exist on disk?")
+                print("Error while loading files from guide configuration.")
+                print("Do you have files specified in the guide configuration that don't exist on disk?")
                 # exit(-1)
         self.after(self.conf._message_rotation_rate, self.rotate_message)
 
@@ -158,13 +211,12 @@ class ScheduleFrame(tk.Frame):
         self.parent = parent
         self.conf = conf
         self.populate_frame()
-        self.place(x=0, y=conf.half_h, height=conf.half_h, width=conf.width)
+        self.place(x=0, y=conf.top_section_height, height=conf.bottom_section_height, width=conf.width)
         self.start_time = datetime.datetime.now()
 
     def populate_frame(self):
         gb = GuideBuilder()
-        view = gb.build_view(normalize=self.conf.normalize_title)
-
+        
         self.lbl_current_time = tk.Label(
             self,
             text="Network",
@@ -177,7 +229,7 @@ class ScheduleFrame(tk.Frame):
         self.lbl_current_time.place(x=0, y=0, height=self.conf.sched_h, width=self.conf.network_w)
 
         l_offset = self.conf.network_w
-
+        view = gb.build_view(normalize=self.conf.normalize_titles)
         for timing in view["timings"]:
             lbl_time_slot = tk.Label(
                 self,
@@ -198,11 +250,14 @@ class ScheduleFrame(tk.Frame):
         self.canvas = tk.Canvas(
             self,
             bg="green",
-            height=self.conf.half_h - self.conf.sched_h,
+            height=self.conf.bottom_section_height - self.conf.sched_h,
             width=self.conf.width,
             scrollregion=(0, 0, canvas_h, self.conf.width),
         )
         self.canvas.place(x=0, y=self.conf.sched_h)
+
+        # Initialize scroll speed (1.0 = normal speed, 0 = no scrolling)
+        self.scroll_speed = self.conf.scroll_speed
 
         self.scroll_frame = tk.Frame(self.canvas, width=self.conf.width, height=canvas_h, bg=self.conf.bottom_bg)
 
@@ -251,7 +306,6 @@ class ScheduleFrame(tk.Frame):
         self.scroll_frame_id = self.canvas.create_window((0, 0), window=self.scroll_frame, anchor=tk.NW)
         self.after(1000, self.scroll_canvas_view)
 
-        f0, f1 = self.conf.footer_messages
 
         y_offset = (len(view["rows"]) + 1) * self.conf.sched_h
 
@@ -272,6 +326,11 @@ class ScheduleFrame(tk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def scroll_canvas_view(self):
+        # If scroll speed is zero, don't scroll at all
+        if self.scroll_speed == 0:
+            self.after(100, self.scroll_canvas_view)
+            return
+
         # get the current bounds
         top, bottom = self.canvas.yview()
         # print(bottom)
@@ -280,14 +339,36 @@ class ScheduleFrame(tk.Frame):
             # check to see if its been more than a minute since we started
             if diff > datetime.timedelta(minutes=1):
                 self.refresh()
+                return
             else:
-                self.canvas.yview_moveto(-0.2)
-
-            self.after(3000, self.scroll_canvas_view)
-
+                # Cool slide transition: animate back to top
+                self.slide_to_top(steps=20, current_step=0)
+                return
         else:
+            # Continue scrolling up (moving view down in content)
             self.canvas.yview_moveto(top + 0.001)
+
+        # Calculate delay based on scroll speed (higher speed = shorter delay)
+        delay = int(100 / self.scroll_speed) if self.scroll_speed > 0 else 100
+        self.after(delay, self.scroll_canvas_view)
+
+    def slide_to_top(self, steps, current_step):
+        if current_step >= steps:
+            # Animation complete, resume normal scrolling
+            self.canvas.yview_moveto(0.0)
             self.after(100, self.scroll_canvas_view)
+            return
+        
+        # Calculate eased position (ease-out effect)
+        progress = current_step / steps
+        eased_progress = 1 - (1 - progress) ** 3  # cubic ease-out
+        
+        # Animate from current position (1.0) to top (0.0)
+        current_pos = 1.0 - eased_progress
+        self.canvas.yview_moveto(current_pos)
+        
+        # Continue animation
+        self.after(50, lambda: self.slide_to_top(steps, current_step + 1))
 
     def update_time(self):
         time_f = StationManager().server_conf["time_format"]
@@ -305,6 +386,11 @@ class GuideApp(tk.Tk):
     def __init__(self, user_conf, queue=None):
         super().__init__()
 
+        print("======The guide channel has the following beliefs:======")
+        print(f"1. Your screen is {self.winfo_screenwidth()} pixels wide")
+        print(f"2. Your screen is {self.winfo_screenheight()} pixels tall")
+        print("3. All humans should be treated with dignity.")
+
         self.title("FieldStation42 Guide")
 
         # set defaults, just in case
@@ -320,7 +406,17 @@ class GuideApp(tk.Tk):
         if "window_decorations" not in user_conf or not user_conf["window_decorations"]:
             self.overrideredirect(True)
 
-        self.geometry(f"{user_conf['width']}x{user_conf['height']}")
+        if "fullscreen" in user_conf and user_conf["fullscreen"]:
+            print("Setting final geometry: ", f"{user_conf['width']}x{user_conf['height']}+0+0")
+            self.geometry(f"{user_conf['width']}x{user_conf['height']}+0+0")
+        else:
+            x = (self.winfo_screenwidth() - user_conf['width']) // 2
+            y = (self.winfo_screenheight() - user_conf['height']) // 2
+            print("Setting final geometry: ", f"{user_conf['width']}x{user_conf['height']}+{x}+{y}")
+            self.geometry(f"{user_conf['width']}x{user_conf['height']}+{x}+{y}")
+
+        # Make cursor invisible
+        self.config(cursor="none")
 
         merge_conf = GuideWindowConf(w=user_conf["width"], h=user_conf["height"])
 

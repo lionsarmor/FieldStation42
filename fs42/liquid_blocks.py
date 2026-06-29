@@ -1,4 +1,6 @@
 import datetime
+import os.path
+import random
 
 from fs42 import timings
 from fs42.reel_cutter import ReelCutter
@@ -20,18 +22,28 @@ class LiquidBlock:
             self.title = title
         self.reel_blocks = None
         self.plan = None
-        self.break_strategy = break_strategy
+        
 
+        self.break_info = break_info if break_info else {}
+        
         self.sequence_key = None
 
         if break_info:
-            self.start_bump = break_info["start_bump"] if "start_bump" in break_info else None
-            self.end_bump = break_info["end_bump"] if "end_bump" in break_info else None
-            self.bump_override = break_info["bump_dir"] if "bump_dir" in break_info else None
-            self.commercial_override = break_info["commercial_dir"] if "commercial_dir" in break_info else None
+            #print("break info: ", break_info)
+            self.start_bump = break_info.get("start_bump", None)
+            self.end_bump = break_info.get("end_bump", None)
+            self.bump_override = break_info.get("bump_dir", None)
+            self.commercial_override = break_info.get("commercial_dir", None)
+        
+        self.break_strategy = break_strategy
+
+        # set by liquid_schedule before make_plan() is called
+        # index 0=current, 1=next, 2=next-next, 3=next-next-next
+        self.lookahead = []
 
     def __str__(self):
-        return f"{self.start_time.strftime('%m/%d %H:%M')} - {self.end_time.strftime('%H:%M')} - {self.title}"
+        content = os.path.basename(self.content.path)
+        return f"{self.start_time.strftime('%m/%d %H:%M')} - {self.end_time.strftime('%H:%M')} - {self.title} - {content}"
 
     def content_duration(self):
         return self.content.duration
@@ -43,50 +55,109 @@ class LiquidBlock:
         return self.playback_duration() - self.content_duration()
 
     @staticmethod
-    def clip_break_points_dist(break_points, max_breaks):
-        # then remove the ones with the shortest durations until we have fewer than max_breaks
-        sorted_breaks = sorted(break_points, key=lambda k: k["black_duration"], reverse=True)
-        clipped_breaks = sorted_breaks[: int(max_breaks)]
-        # and put it back in place
-        break_points = sorted(clipped_breaks, key=lambda k: k["black_start"])
-        return break_points
-
-    @staticmethod
     def clip_break_points(break_points, max_breaks, content_duration):
         # ensure start ordering
         break_points = MediaProcessor.calc_black_segments(break_points, content_duration)
 
-        # then remove the ones with the shortest segment duration until we have fewer than max_breaks
-        sorted_breaks = sorted(break_points, key=lambda k: k["segment_duration"], reverse=True)
-        clipped_breaks = sorted_breaks[: int(max_breaks)]
-        # and put it back in place
-        break_points = sorted(clipped_breaks, key=lambda k: k["black_start"])
-        return break_points
+        # Handle edge cases
+        if max_breaks <= 0 or len(break_points) == 0:
+            return []
+
+        if len(break_points) <= max_breaks:
+            return break_points
+
+        # Merge adjacent chapters to create evenly-distributed segments
+        # This ensures no content is skipped, just fewer commercial breaks
+        max_breaks = int(max_breaks)
+
+        # Calculate which chapter boundaries to keep as break insertion points
+        # For max_breaks segments, we need (max_breaks - 1) commercial breaks
+        num_breaks = max_breaks - 1
+
+        # Select evenly-distributed break positions
+        step = (len(break_points) - 1) / num_breaks if num_breaks > 0 else 0
+        break_indices = []
+        for i in range(1, max_breaks):  # Start from 1, not 0 (skip the first chapter start)
+            index = round(i * step)
+            if index not in break_indices and index < len(break_points):
+                break_indices.append(index)
+
+        # Create merged segments by combining chapters between selected break points
+        merged_segments = []
+        segment_start_idx = 0
+
+        for break_idx in break_indices:
+            # Merge all chapters from segment_start_idx to break_idx into one segment
+            merged_segment = {
+                "chapter_start": break_points[segment_start_idx]["chapter_start"],
+                "chapter_end": break_points[break_idx]["chapter_start"],
+            }
+            merged_segments.append(merged_segment)
+            segment_start_idx = break_idx
+
+        # Add the final segment (from last break to end)
+        final_segment = {
+            "chapter_start": break_points[segment_start_idx]["chapter_start"],
+            "chapter_end": break_points[-1]["chapter_end"],
+        }
+        merged_segments.append(final_segment)
+
+        return merged_segments
 
     def make_plan(self, catalog):
         # first, collect any reels (commercials and bumps) we might need to buffer to the requested duration
         diff = self.playback_duration() - self.content_duration()
 
         _fluid = FluidBuilder()
-        break_points = _fluid.get_breaks(self.content.path)
+
+        # Prefer chapter markers over black detection
+        break_points = _fluid.get_chapters(self.content.realpath)
+        if not break_points:
+            # Fall back to black detection if no chapters
+            break_points = _fluid.get_breaks(self.content.realpath)
+
         strict_count = None
         if break_points:
-            # the maximum number of breaks points should be no more than every 2 minutes
-            max_breaks = self.playback_duration() / timings.MIN_2
-            # or the max breaks points should make them last at least one minute each
-            # max_breaks = diff/timings.MIN_1
+            # Calculate how many breaks we need based on break_duration config
+            # If break_duration is configured, use it to determine break count
+            break_duration = self.break_info.get("break_duration", None)
+            if break_duration is None:
+                # Try to get from catalog config if not in break_info
+                break_duration = catalog.config.get("break_duration", None)
 
-            if len(break_points) > max_breaks:
-                break_points = self.clip_break_points(break_points, max_breaks, self.content_duration())
+            if break_duration and break_duration > 0:
+                # Calculate desired number of breaks based on total buffer and break_duration
+                # This respects the user's break_duration setting
+                desired_breaks = max(1, int(diff / break_duration))
 
-            strict_count = len(break_points) + 1
+                # break_points contains content segments, so we need desired_breaks + 1 segments
+                desired_segments = desired_breaks + 1
+
+                # If we have more chapter markers than needed, select the best-positioned ones
+                if len(break_points) > desired_segments:
+                    break_points = self.clip_break_points(break_points, desired_segments, self.content_duration())
+
+                # strict_count is the number of reel blocks (commercial breaks) to create
+                # This is one less than the number of content segments
+                strict_count = len(break_points) - 1 if len(break_points) > 0 else 0
+            else:
+                # Fallback: limit breaks to no more than every 2 minutes of playback
+                max_breaks = self.playback_duration() / timings.MIN_2
+                # We need max_breaks + 1 content segments to create max_breaks commercial breaks
+                max_segments = int(max_breaks) + 1
+
+                if len(break_points) > max_segments:
+                    break_points = self.clip_break_points(break_points, max_segments, self.content_duration())
+
+                # strict_count is the number of reel blocks (one less than content segments)
+                strict_count = len(break_points) - 1 if len(break_points) > 0 else 0
 
         # is there a start bump?
         if self.start_bump:
-            diff -= self.start_bump.duration
+            diff -= self.start_bump["duration"]
 
         if self.end_bump:
-            diff -= self.end_bump.duration
+            diff -= self.end_bump["duration"]
 
         self.reel_blocks = None
         if diff < -2:
@@ -101,8 +172,9 @@ class LiquidBlock:
                 commercial_dir=self.commercial_override,
                 bump_dir=self.bump_override,
                 strict_count=strict_count,
+                lookahead=self.lookahead,
             )
-
+            
         else:
             self.reel_blocks = []
 
@@ -114,7 +186,13 @@ class LiquidBlock:
             if strict_count == len(self.reel_blocks):
                 pass
             elif strict_count > len(self.reel_blocks):
-                break_points = self.clip_break_points(break_points, len(self.reel_blocks), self.content_duration())
+                # only clip break_points if we have reel blocks to work with
+                # if reel_blocks is empty (e.g., diff <= 2), we don't need chapter-based breaks
+                if len(self.reel_blocks) > 0:
+                    break_points = self.clip_break_points(break_points, len(self.reel_blocks), self.content_duration())
+                else:
+                    # no reel blocks = no buffer time = no breaks needed, clear break_points
+                    break_points = []
             else:
                 # do nothing for now, they will play at end
                 pass
@@ -132,9 +210,9 @@ class LiquidBlock:
 
 
 class LiquidClipBlock(LiquidBlock):
-    def __init__(self, content, start_time, end_time, title=None, break_strategy="standard", bump_info=None):
+    def __init__(self, content, start_time, end_time, title=None, break_strategy="standard", break_info=None):
         if type(content) is list:
-            super().__init__(content, start_time, end_time, title, break_strategy, bump_info)
+            super().__init__(content, start_time, end_time, title, break_strategy, break_info)
         else:
             raise (TypeError(f"LiquidClipBlock required content of type list. Got {type(content)} instead"))
 
@@ -154,10 +232,20 @@ class LiquidClipBlock(LiquidBlock):
 
         # is there a start bump?
         if self.start_bump:
-            diff -= self.start_bump.duration
+            diff -= self.start_bump["duration"]
 
         if self.end_bump:
-            diff -= self.end_bump.duration
+            diff -= self.end_bump["duration"]
+
+        # calculate desired number of breaks based on break_duration
+        strict_count = None
+        break_duration = self.break_info.get("break_duration", None)
+        if break_duration is None:
+            break_duration = catalog.config.get("break_duration", None)
+
+        if break_duration and break_duration > 0 and diff > 2:
+            # calculate how many breaks we want based on total buffer time and break_duration
+            strict_count = max(1, int(diff / break_duration))
 
         self.reel_blocks = None
         if diff < -2:
@@ -166,7 +254,9 @@ class LiquidClipBlock(LiquidBlock):
             raise (ValueError(err))
         if diff > 2:
             self.reel_blocks = catalog.make_reel_fill(
-                self.start_time, diff, commercial_dir=self.commercial_override, bump_dir=self.bump_override
+                self.start_time, diff, commercial_dir=self.commercial_override, bump_dir=self.bump_override,
+                strict_count=strict_count,
+                lookahead=self.lookahead,
             )
         else:
             self.reel_blocks = []
@@ -177,15 +267,22 @@ class LiquidClipBlock(LiquidBlock):
 
 
 class LiquidOffAirBlock(LiquidBlock):
-    def __init__(self, content, start_time, end_time, title=None):
-        super().__init__(content, start_time, end_time, title)
+    def __init__(self, content, start_time, end_time, title=None, break_strategy="standard", break_info=None, sign_off=None):
+        super().__init__(content, start_time, end_time, title, break_strategy, break_info)
+        self.sign_off = sign_off
 
     def make_plan(self, catalog):
         self.plan = []
         current_mark = self.start_time
-
+        first_loop = True
         while current_mark < self.end_time:
-            duration = self.content.duration
+            # only show sign_off on first loop
+            if self.sign_off and first_loop:
+                _content = self.sign_off
+            else:
+                _content = self.content
+            first_loop = False
+            duration = float(_content.duration)
             current_mark += datetime.timedelta(seconds=duration)
             datetime.timedelta()
             if current_mark > self.end_time:
@@ -193,12 +290,16 @@ class LiquidOffAirBlock(LiquidBlock):
                 delta = current_mark - self.end_time
                 duration -= delta.total_seconds()
 
-            self.plan.append(BlockPlanEntry(self.content.path, 0, duration))
+            self.plan.append(BlockPlanEntry(_content.path, 0, duration, content_type=_content.content_type, media_type=_content.media_type))
 
 
 class LiquidLoopBlock(LiquidBlock):
-    def __init__(self, content, start_time, end_time, title=None):
-        super().__init__(content, start_time, end_time, title)
+    def __init__(self, content, start_time, end_time, title=None, break_strategy="standard", break_info=None, shuffle=False):
+        super().__init__(content, start_time, end_time, title, break_strategy, break_info)
+        self.shuffle = shuffle
+
+    def __str__(self):
+        return f"{self.start_time.strftime('%m/%d %H:%M')} - {self.end_time.strftime('%H:%M')} - {self.title} - LOOP"
 
     def make_plan(self, catalog):
         if not self.content:
@@ -216,11 +317,14 @@ class LiquidLoopBlock(LiquidBlock):
                 current_index += 1
                 if current_index >= len(self.content):
                     current_index = 0
+                    if self.shuffle:
+                        random.shuffle(self.content)
+
             else:
                 keep_going = False
                 duration = (self.end_time - current_mark).total_seconds()
 
-            entries.append(BlockPlanEntry(clip.path, 0, duration))
+            entries.append(BlockPlanEntry(clip.path, 0, duration, content_type=clip.content_type, media_type=clip.media_type))
 
             current_mark = next_mark
         self.plan = entries
@@ -249,9 +353,9 @@ class ReelBlock:
     def make_plan(self):
         entries = []
         if self.start_bump is not None:
-            entries.append(BlockPlanEntry(self.start_bump.path, 0, self.start_bump.duration))
+            entries.append(BlockPlanEntry(self.start_bump.path, 0, self.start_bump.duration, content_type="bump", media_type=self.start_bump.media_type))
         for comm in self.comms:
-            entries.append(BlockPlanEntry(comm.path, 0, comm.duration))
+            entries.append(BlockPlanEntry(comm.path, 0, comm.duration, content_type="commercial", media_type=comm.media_type))
         if self.end_bump is not None:
-            entries.append(BlockPlanEntry(self.end_bump.path, 0, self.end_bump.duration))
+            entries.append(BlockPlanEntry(self.end_bump.path, 0, self.end_bump.duration, content_type="bump", media_type=self.end_bump.media_type))
         return entries

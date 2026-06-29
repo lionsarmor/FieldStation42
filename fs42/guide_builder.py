@@ -2,21 +2,16 @@ import sys
 import os
 import json
 import datetime
-import re
 
 sys.path.append(os.getcwd())
 from fs42.station_manager import StationManager
-from fs42.liquid_manager import LiquidManager
+from fs42.liquid_manager import LiquidManager, ScheduleNotFound, ScheduleQueryNotInBounds
 from fs42.liquid_blocks import LiquidBlock
-
+from fs42.title_parser import TitleParser
 
 def normalize_video_title(title):
-    if "_V1" in title:
-        (title, episode_id) = title.split("_V1")
-
-    spaced = re.sub("[^a-zA-Z0-9]", " ", title)
-    titled = spaced.title()
-    return titled
+    custom_patterns = StationManager().server_conf.get("title_patterns", [])
+    return TitleParser.parse_title(title, custom_patterns)
 
 
 class PreviewBlock:
@@ -59,7 +54,11 @@ class ScheduleQuery:
             if next_marker > end_target:
                 ends_later = True
 
-            _display_title = normalize_video_title(programming_block.title) if normalize else programming_block.title
+            _display_title = programming_block.title
+
+            #normalize if explicitely told to
+            if normalize:
+                _display_title = normalize_video_title(programming_block.title)
 
             _block = PreviewBlock(_display_title)
             _block.started_earlier = started_earlier
@@ -98,9 +97,19 @@ class GuideBuilder:
 
         # each statio is a row
         for station in StationManager().stations:
-            if station["network_type"] == "guide" or station["network_type"] == "streaming":
+            if station["hidden"]:
                 continue
-            entries = ScheduleQuery.query_slot(station["network_name"], start_time, normalize)
+            elif not station["_has_schedule"]:
+                to_display = station.get("network_long_name", station["network_name"])
+                placeholder = PreviewBlock(to_display, width=5400)
+                entries = [placeholder]
+            else:
+                try:
+                    entries = ScheduleQuery.query_slot(station["network_name"], start_time, normalize)
+                except Exception:
+                    # Create a single block that spans the entire 1.5 hour viewing window (5400 seconds)
+                    placeholder = PreviewBlock("No programming data available", width=5400)
+                    entries = [placeholder]
 
             view["rows"].append(entries)
             network_name = station["network_name"]
@@ -125,9 +134,9 @@ class GuideBuilder:
             timings.append(f"{hour_two}:00")
 
         formatted_timings = []
-        # TODO: Add configuration option for 24 vs 12 hour times
+        time_format = StationManager().server_conf["time_format"]
         for timing in timings:
-            formatted = datetime.datetime.strptime(timing, "%H:%M").strftime("%I:%M %p")
+            formatted = datetime.datetime.strptime(timing, "%H:%M").strftime(time_format)
             formatted_timings.append(formatted)
 
         view["timings"] = formatted_timings

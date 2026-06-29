@@ -6,18 +6,25 @@
     "break_strategy": "end",
     "commercial_free": true, 
 
-    "catalog_path" : "catalog/indie42_catalog.bin",
     "content_dir" : "catalog/indie42_catalog",
     "commercial_dir" : "commercial",
     "bump_dir" : "bump",
     "clip_shows" : [""],
 
-    "runtime_dir" : "runtime/indie42",
-    "schedule_path": "runtime/indie42_schedule.bin",
     "sign_off_video": "runtime/signoff.mp4",
     "off_air_video": "runtime/off_air_pattern.mp4",
     "standby_image": "runtime/standby.png",
     "be_right_back_media" : "runtime/brb.png",
+
+    "autobump": {
+        "title": "Indie42 TV",
+        "subtitle": "Old and Bad Videos",
+        "variation": "retro",
+        "detail1": "If you like the old stuff",
+        "detail2": "that has bad messaging",
+        "detail3": "details are optional",
+        "bg_music": "logo0.mp3"
+    },
 
     "monday": {
         "0": {"tags" : "late"},

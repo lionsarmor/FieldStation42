@@ -5,14 +5,17 @@ __pycache__/
 
 # my specific stuff
 *.bin
+*.bak
 runtime/
 catalog/
 env/
+local/
 *.kdev4*
 *.kate-swp
 *confs/*.json
 *confs/mine
 fs42/guide_render/static/90s.html
+.idea/
 
 # C extensions
 *.so

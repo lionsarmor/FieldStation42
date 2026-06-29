@@ -3,25 +3,30 @@ import sys
 import argparse
 import datetime
 from rich.console import Console
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich import style
 
 from fs42.catalog import ShowCatalog
 from fs42.station_manager import StationManager
 from fs42.liquid_manager import LiquidManager
 from fs42.liquid_schedule import LiquidSchedule
 from fs42.fluid_builder import FluidBuilder
+from fs42.sequence_api import SequenceAPI
+from fs42.fs42_server.fs42_server import mount_fs42_api
 
 FF_USE_FLUID_FILE_CACHE = True
 
-logging.basicConfig(format="%(levelname)s:%(name)s:%(message)s", level=logging.INFO)
+logging.basicConfig(format="[%(name)s] %(message)s", level=logging.INFO, handlers=[RichHandler()])
 
 
 class Station42:
-    def __init__(self, config, rebuild_catalog=False):
+    def __init__(self, config, rebuild_catalog=False, force=False, skip_chapter_scan=False):
         # station configuration
         self.config = config
         self._l = logging.getLogger(self.config["network_name"])
         self.catalog: ShowCatalog = ShowCatalog(
-            self.config, rebuild_catalog=rebuild_catalog
+            self.config, rebuild_catalog=rebuild_catalog, force=force, skip_chapter_scan=skip_chapter_scan
         )
         self.get_text_listing = self.catalog.get_text_listing
         self.check_catalog = self.catalog.check_catalog
@@ -93,10 +98,15 @@ def build_parser():
         help="Scan for points break insertion point in media files in the provided directory. (VERY experimental)",
     )
     parser.add_argument(
+        "-t",
+        "--chapter_detect_dir",
+        help="Scan for chapter markers in media files in the provided directory.",
+    )
+    parser.add_argument(
         "-w",
         "--add_week",
         nargs="*",
-        help="Add one week to the specifided stations, or all stations if none are specified.",
+        help="Add one week to the specified stations, or all stations if none are specified.",
     )
     parser.add_argument(
         "-m",
@@ -111,7 +121,7 @@ def build_parser():
         help="Add one day to to the specified stations, or all stations if none are specified.",
     )
     parser.add_argument(
-        "-s",
+        "-e",
         "--schedule",
         action="store_true",
         help="View schedule summary information for all stations.",
@@ -128,11 +138,45 @@ def build_parser():
         help="Delete the schedule for the specified network names or all networks if no parameter given",
     )
     parser.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="With -r or -x will force deletion of schedules and catalogs if they are failing. Won't reset sequences, file cache or breakpoints",
+    )
+    parser.add_argument(
+        "--skip_chapter_scan",
+        action="store_true",
+        help="Skip automatic chapter scanning during catalog rebuild",
+    )
+    parser.add_argument(
+        "--reset_chapters",
+        action="store_true",
+        help="Clear all cached chapter markers from the database",
+    )
+    parser.add_argument(
+        "--reset_breaks",
+        action="store_true",
+        help="Clear all cached break points from the database",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Set logging verbosity level to very chatty",
     )
+    parser.add_argument(
+        "-s", "--server",
+        action="store_true",
+        help="Run the FieldStation42 web API server after other actions.",
+    )
+
+    parser.add_argument(
+        "--limit_memory",
+        nargs=1,
+        type=float,
+        help="Enter a number 0.1 and 1.0 to limit the memory usage of a command."
+    )
+
     return parser
 
 
@@ -156,11 +200,52 @@ def main():
                     raise ValueError(f"Can't find station by name: {arg}")
         return _rebuild_list
 
+    def delete_schedules(_rebuild_list):
+        nonlocal success_messages, failure_messages, _l
+        _l.info("Starting schedule reset.")
+        for station in _rebuild_list:
+            if station["_has_schedule"]:
+                _l.info(f"Resetting schedule for {station['network_name']}")
+                try:
+                    LiquidManager().reset_schedule(station, args.force)
+                    success_messages.append(
+                        f"Successfully reset schedule for {station['network_name']}"
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[red]Error resetting schedule for {station['network_name']}: {e}[/red]"
+                    )
+                    _l.exception(e)
+                    failure_messages.append(
+                        f"Failed to reset schedule for {station['network_name']} - check logs."
+                    )
+
+    def rebuild_catalogs(_rebuild_list):
+        nonlocal success_messages, failure_messages, _l
+        _l.info("Starting catalog rebuild.")
+        for station in _rebuild_list:
+            if station["_has_catalog"]:
+                _l.info(f"Rebuilding catalog for {station['network_name']}")
+                try:
+                    # Chapter scanning is now opt-out via --skip_chapter_scan flag
+                    Station42(station, True, args.force, args.skip_chapter_scan)
+                    success_messages.append(
+                        f"Successfully rebuilt catalog for {station['network_name']}"
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[red]Error rebuilding catalog for {station['network_name']}: {e}[/red]"
+                    )
+                    _l.exception(e)
+                    failure_messages.append(
+                        f"Failed to rebuild catalog for {station['network_name']} - check logs."
+                    )
+
     execution_start_time = datetime.datetime.now()
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.graphical_interface or len(sys.argv) <= 1:
+    if args.graphical_interface:
         try:
             from fs42.ux.ux import StationApp
         except ModuleNotFoundError:
@@ -173,7 +258,8 @@ def main():
         sys.exit()
 
     if args.verbose:
-        _l.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+        _l.debug("Level set to debug.")
         success_messages.append("I enabled verbose logging")
 
     if args.logfile:
@@ -183,8 +269,65 @@ def main():
         _l.addHandler(fh)
         success_messages.append(f"I setup logging to file: {args.logfile}")
 
+    if args.limit_memory:
+
+        import resource
+
+        def get_memory():
+            with open('/proc/meminfo', 'r') as mem:
+                free_memory = 0
+                for i in mem:
+                    sline = i.split()
+                    if str(sline[0]) in ('MemFree:', 'Buffers:', 'Cached:'):
+                        free_memory += int(sline[1])
+            return free_memory  # KiB
+
+
+        def memory_limit(percent):
+            """Limit max memory usage to half."""
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            # Convert KiB to bytes, and divide in two to half
+            resource.setrlimit(resource.RLIMIT_AS, (int(get_memory() * 1024 / (1/percent)), hard))
+            _l.info("Reducing available memory usage.")
+
+
+        memory_percent = args.limit_memory[0]
+        if memory_percent > 1:
+            memory_percent = 1
+            _l.info("Memory percent too high. Using full memory.")
+        elif memory_percent < 0.1:
+            memory_percent = 0.1
+            _l.info("Memory percent too low. Setting to 10%.")
+        memory_limit(memory_percent)
+
+    if args.reset_chapters:
+        import sqlite3
+        _l.info("Clearing all cached chapter markers from database")
+        fluid = FluidBuilder()
+        with sqlite3.connect(fluid.db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("DELETE FROM chapter_points")
+            connection.commit()
+            cursor.close()
+        success_messages.append("Cleared all cached chapter markers")
+        print_outcome(success_messages, failure_messages, console)
+        return
+
+    if args.reset_breaks:
+        import sqlite3
+        _l.info("Clearing all cached break points from database")
+        fluid = FluidBuilder()
+        with sqlite3.connect(fluid.db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("DELETE FROM break_points")
+            connection.commit()
+            cursor.close()
+        success_messages.append("Cleared all cached break points")
+        print_outcome(success_messages, failure_messages, console)
+        return
+
     if args.schedule:
-        _l.info("Printing shedule summary.")
+        _l.info("Printing schedule summary.")
         print(LiquidManager().get_summary())
         success_messages.append("I printed the schedule summary")
         print_outcome(success_messages, failure_messages, console)
@@ -238,7 +381,7 @@ def main():
             if station["_has_catalog"]:
                 _l.info(f"Checking catalog for {station['network_name']}")
                 try:
-                    Station42(station, False).check_catalog()
+                    Station42(station, False, False).check_catalog()
                     success_messages.append(
                         f"Successfully checked catalog for {station['network_name']}"
                     )
@@ -253,6 +396,7 @@ def main():
         print_outcome(success_messages, failure_messages, console)
         return
 
+
     if args.delete_schedules is not None:
         _l.info("Starting schedule deletions")
         _rebuild_list = []
@@ -265,22 +409,7 @@ def main():
                 "Failed to get list of stations to delete schedules - check your arguments."
             )
 
-        for station in _rebuild_list:
-            if station["_has_schedule"]:
-                _l.info(f"Deleting schedule for {station['network_name']}")
-                try:
-                    LiquidManager().reset_schedule(station)
-                    success_messages.append(
-                        f"Successfully deleted schedule for {station['network_name']}"
-                    )
-                except Exception as e:
-                    console.print(
-                        f"[red]Error deleting schedule for {station['network_name']}: {e}[/red]"
-                    )
-                    _l.exception(e)
-                    failure_messages.append(
-                        f"Failed to delete schedule for {station['network_name']} - check logs."
-                    )
+        delete_schedules(_rebuild_list)
 
     if args.rebuild_catalog is not None:
         _rebuild_list = []
@@ -293,23 +422,8 @@ def main():
             failure_messages.append(
                 "Failed to get list of stations to rebuild - check your arguments."
             )
-
-        for station in _rebuild_list:
-            if station["_has_catalog"]:
-                _l.info(f"Building catalog for {station['network_name']}")
-                try:
-                    Station42(station, True)
-                    success_messages.append(
-                        f"Successfully built catalog for {station['network_name']}"
-                    )
-                except Exception as e:
-                    console.print(
-                        f"[red]Error building catalog for {station['network_name']}: {e}[/red]"
-                    )
-                    _l.exception(e)
-                    failure_messages.append(
-                        f"Failed to build catalog for {station['network_name']} - check logs."
-                    )
+        delete_schedules(_rebuild_list)
+        rebuild_catalogs(_rebuild_list)
 
         if FF_USE_FLUID_FILE_CACHE:
             try:
@@ -335,7 +449,7 @@ def main():
             if station["_has_catalog"]:
                 _l.info(f"Scanning for new sequences for {station['network_name']}")
                 try:
-                    Station42(station, False).catalog.scan_sequences(False)
+                    SequenceAPI.scan_sequences(station)
                     success_messages.append(
                         f"Successfully scanned for new sequences for {station['network_name']}"
                     )
@@ -347,7 +461,7 @@ def main():
                     failure_messages.append(
                         f"Failed to scan for new sequences for {station['network_name']} - check logs."
                     )
-                Station42(station, False).catalog.scan_sequences(True)
+                
 
     if args.rebuild_sequences is not None:
         _rebuild_list = []
@@ -364,7 +478,7 @@ def main():
             if station["_has_catalog"]:
                 _l.info(f"Rebuilding sequences for {station['network_name']}")
                 try:
-                    Station42(station, False).catalog.rebuild_sequences(False)
+                    SequenceAPI.rebuild_sequences(station)
                     success_messages.append(
                         f"Successfully rebuilt sequences for {station['network_name']}"
                     )
@@ -376,12 +490,16 @@ def main():
                     failure_messages.append(
                         f"Failed to rebuild sequences for {station['network_name']} - check logs."
                     )
-                Station42(station, False).catalog.rebuild_sequences(True)
 
     if args.break_detect_dir is not None:
         _l.info("Scanning for break detection points in media files...")
         FluidBuilder().scan_breaks(args.break_detect_dir)
         success_messages.append("I scanned for break detection points")
+
+    if args.chapter_detect_dir is not None:
+        _l.info("Scanning for chapter markers in media files...")
+        FluidBuilder().scan_chapters(args.chapter_detect_dir)
+        success_messages.append("I scanned for chapter markers")
 
     if args.add_day is not None:
         _to_add_to = []
@@ -471,6 +589,17 @@ def main():
                     )
 
     print_outcome(success_messages, failure_messages, console)
+
+    if args.server or len(sys.argv) <= 1:
+        info = "\nFS42 web server is running on this machine. You can log into the web gui at http://localhost:4242 to manage catalogs and schedules\n"
+        print()
+        console.print(Panel.fit(info, title="FieldStation42", subtitle="It's Up To You.", border_style=style.Style(color="blue")))
+        print()
+        mount_fs42_api()
+        
+        return
+
+    
 
 
 if __name__ == "__main__":

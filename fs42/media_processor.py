@@ -1,7 +1,38 @@
 import logging
 import os
 import glob
-import ffmpeg
+import json
+import sys
+
+# Validate ffmpeg-python package
+try:
+    import ffmpeg
+    # Check if this is the correct ffmpeg-python package
+    if not hasattr(ffmpeg, 'probe'):
+        print("\n" + "="*70)
+        print("ERROR: Incorrect ffmpeg package detected!")
+        print("="*70)
+        print("\nYou have the wrong 'ffmpeg' package installed.")
+        print("\nThis might be because you haven't activated your virtual environment.")
+        print("Please activate the virtual environment and try again:")
+        print("  source env/bin/activate  (Linux/Mac)")
+        print("\nIf the issue persists, you need to:")
+        print("  1. Uninstall the wrong package: pip uninstall ffmpeg")
+        print("  2. Install the correct package: pip install ffmpeg-python")
+        print("="*70 + "\n")
+        sys.exit(1)
+except ImportError:
+    print("\n" + "="*70)
+    print("ERROR: ffmpeg-python package not found!")
+    print("="*70)
+    print("\nThis is likely because you haven't activated your virtual environment.")
+    print("Please activate the virtual environment and try again:")
+    print("  source env/bin/activate  (Linux/Mac)")
+    print("\nIf the virtual environment is activated, install the package:")
+    print("  pip install ffmpeg-python")
+    print("="*70 + "\n")
+    sys.exit(1)
+
 from fs42.fluid_objects import FileRepoEntry
 from fs42 import timings
 
@@ -12,20 +43,92 @@ except ImportError:
     # fall back to import from version 1.0
     from moviepy.editor import VideoFileClip  # type: ignore
 
-from fs42.schedule_hint import MonthHint, QuarterHint, RangeHint, BumpHint, DayPartHint
+try:
+    import mutagen
+except ImportError:
+    mutagen = None
+
+from fs42.schedule_hint import MonthHint, QuarterHint, RangeHint, BumpHint, DayPartHint, DayofWeekHint
 from fs42.catalog_entry import CatalogEntry
 
 
 class MediaProcessor:
-    supported_formats = ["mp4", "mpg", "mpeg", "avi", "mov", "mkv", "ts", "m4v", "webm", "wmv"]
+    # Define media type extensions
+    VIDEO_FORMATS = ["mp4", "mpg", "mpeg", "avi", "mov", "mkv", "ts", "m4v", "webm", "wmv"]
+    AUDIO_FORMATS = ["mp3", "m4a", "flac", "wav", "aac", "ogg", "opus", "wma"]
 
-    def process_one(fname, tag, hints, fluid=None) -> CatalogEntry:
+    # For backward compatibility, default to all formats
+    supported_formats = VIDEO_FORMATS + AUDIO_FORMATS
+
+    @staticmethod
+    def get_media_type(file_path: str) -> str:
+        ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+        if ext in MediaProcessor.AUDIO_FORMATS:
+            return 'audio'
+        else:
+            return 'video'
+
+    @staticmethod
+    def extract_audio_metadata(file_path: str) -> dict:
+        if mutagen is None:
+            logging.getLogger("MEDIA").warning("mutagen library not available, skipping audio metadata extraction")
+            return {}
+
+        try:
+            audio = mutagen.File(file_path)
+            if audio is None:
+                return {}
+
+            metadata = {}
+
+            # Extract common tags - mutagen returns lists for most values
+            if hasattr(audio, 'tags') and audio.tags:
+                # Map of ID3v2 frame names to our simple tag names
+                # Different formats use different tag names:
+                # MP3 uses ID3v2 (TIT2, TPE1, etc)
+                # MP4/M4A uses \xa9nam, \xa9ART, etc
+                # FLAC/OGG use vorbis comments (title, artist, etc)
+                tag_mappings = {
+                    'title': ['TIT2', 'title', '\xa9nam'],
+                    'artist': ['TPE1', 'artist', '\xa9ART'],
+                    'album': ['TALB', 'album', '\xa9alb'],
+                    'date': ['TDRC', 'date', '\xa9day', 'year'],
+                    'genre': ['TCON', 'genre', '\xa9gen']
+                }
+
+                for tag_name, possible_keys in tag_mappings.items():
+                    for key in possible_keys:
+                        value = audio.tags.get(key)
+                        if value:
+                            # Convert to string, handle list values
+                            if isinstance(value, list) and len(value) > 0:
+                                metadata[tag_name] = str(value[0])
+                            else:
+                                metadata[tag_name] = str(value)
+                            break  # Found it, move to next tag
+
+            # Fallback to filename if no title
+            if 'title' not in metadata:
+                metadata['title'] = os.path.splitext(os.path.basename(file_path))[0]
+
+            return metadata
+
+        except Exception as e:
+            logging.getLogger("MEDIA").debug(f"Could not extract metadata from {file_path}: {e}")
+            # Return basic metadata from filename
+            return {
+                'title': os.path.splitext(os.path.basename(file_path))[0]
+            }
+
+    def process_one(fname, tag, hints, fluid=None, content_type="feature") -> CatalogEntry:
         _l = logging.getLogger("MEDIA")
         _l.debug(f"--process_one is working on {fname}")
         # get video file length in seconds
         duration = 0.0
         result = None
+        error_hint = None
         try:
+            full_path = False
             if fluid:
                 full_path = os.path.realpath(fname)
                 cached = fluid.check_file_cache(full_path)
@@ -34,23 +137,29 @@ class MediaProcessor:
 
             if not duration:
                 # then do the processing
-                duration = MediaProcessor._get_duration(fname)
+                duration, error_hint = MediaProcessor._get_duration(fname)
 
             # it might not support streams, so check with moviepy
             if duration <= 0.0:
                 try:
                     video_clip = VideoFileClip(fname)
                     duration = video_clip.duration
-                except Exception as e:
-                    _l.error(f"Error in moviepy attempting to get duration for {fname}")
-                    _l.exception(e)
+                    video_clip.close()
+                except Exception:
+                    pass
             # see if both returned 0
             if duration <= 0.0:
-                _l.warning(f"Could not get a duration for tag: {tag}  file: {fname}")
+                if error_hint:
+                    _l.warning(f"Skipping {fname}: {error_hint}")
+                else:
+                    _l.warning(f"Could not get duration for {fname}")
                 _l.warning("Files with 0 length can't be added to the catalog.")
             else:
-                show_clip = CatalogEntry(fname, duration, tag, hints)
+                # Detect media type from file extension
+                media_type = MediaProcessor.get_media_type(fname)
+                show_clip = CatalogEntry(fname, duration, tag, hints, content_type=content_type, media_type=media_type)
                 result = show_clip
+                result.realpath = full_path
                 _l.debug(f"--_process_media is done with {fname}: {show_clip}")
 
         except Exception as e:
@@ -60,7 +169,7 @@ class MediaProcessor:
         return result
 
     @staticmethod
-    def _process_media(file_list, tag, hints=[], fluid=None) -> list[CatalogEntry]:
+    def _process_media(file_list, tag, hints=[], fluid=None, content_type="feature") -> list[CatalogEntry]:
         _l = logging.getLogger("MEDIA")
         _l.debug(f"_process_media starting processing for tag={tag} on {len(file_list)} files")
         show_clip_list = []
@@ -72,11 +181,11 @@ class MediaProcessor:
         for fname in file_list:
             _l.debug(f"--_process_media is working on {fname}")
             # get video file length in seconds
-            results = MediaProcessor.process_one(fname, tag, hints, fluid)
+            results = MediaProcessor.process_one(fname, tag, hints, fluid, content_type)
             if results:
                 show_clip_list.append(results)
             else:
-                failed.append(failed)
+                failed.append(fname)
 
         _l.debug(f"_process_media completed processing for tag={tag} on {len(file_list)} files")
 
@@ -92,19 +201,51 @@ class MediaProcessor:
         return show_clip_list
 
     @staticmethod
-    def _get_duration(file_name) -> float:
-        probed = ffmpeg.probe(file_name)
+    def _get_duration(file_name) -> tuple:
+        """Returns (duration, error_hint). duration is -1 on failure; error_hint is a human-readable cause or None."""
+        _l = logging.getLogger("MEDIA")
+        try:
+            probed = ffmpeg.probe(file_name)
 
-        if "streams" in probed and len(probed["streams"]) and "duration" in probed["streams"][0]:
-            return float(probed["streams"][0]["duration"])
-        else:
-            return -1
+            if "streams" in probed and len(probed["streams"]) and "duration" in probed["streams"][0]:
+                return float(probed["streams"][0]["duration"]), None
+            elif "format" in probed and "duration" in probed["format"]:
+                return float(probed['format']['duration']), None
+            else:
+                return -1, None
+        except AttributeError as e:
+            # This should never happen now due to startup check, but just in case
+            _l.error(f"ffmpeg module error - you may have the wrong package installed: {e}")
+            _l.error("Please ensure you have activated the virtual environment and have ffmpeg-python installed")
+            return -1, None
+        except ffmpeg.Error as e:
+            stderr = e.stderr.decode('utf-8', errors='replace') if e.stderr else ''
+            if 'score of 1' in stderr or 'misdetection possible' in stderr:
+                hint = "file does not appear to be a valid video — may be a corrupt or failed download"
+            elif 'moov atom not found' in stderr:
+                hint = "file is an incomplete MP4 — moov atom missing, likely an interrupted download or encode"
+            else:
+                hint = None
+            _l.debug(f"FFmpeg error probing {file_name}: {e}")
+            return -1, hint
+        except Exception as e:
+            _l.debug(f"Unexpected error probing {file_name}: {e}")
+            return -1, None
 
     @staticmethod
-    def _find_media(path) -> list[str]:
-        logging.getLogger("MEDIA").debug(f"_find_media scanning for media in {path}")
+    def _find_media(path, media_filter="video") -> list[str]:
+        logging.getLogger("MEDIA").debug(f"_find_media scanning for media in {path} with filter={media_filter}")
+
+        # Determine which formats to scan based on filter
+        if media_filter == "audio":
+            formats_to_scan = MediaProcessor.AUDIO_FORMATS
+        elif media_filter == "video":
+            formats_to_scan = MediaProcessor.VIDEO_FORMATS
+        else:  # "mixed"
+            formats_to_scan = MediaProcessor.supported_formats
+
         file_list = []
-        for ext in MediaProcessor.supported_formats:
+        for ext in formats_to_scan:
             this_format = glob.glob(f"{path}/*.{ext}")
             file_list += this_format
             logging.getLogger("MEDIA").debug(
@@ -115,8 +256,8 @@ class MediaProcessor:
         return file_list
 
     @staticmethod
-    def rich_find_media(path: str) -> list[FileRepoEntry]:
-        file_list = MediaProcessor._rfind_media(path)
+    def rich_find_media(path: str, media_filter="video") -> list[FileRepoEntry]:
+        file_list = MediaProcessor._rfind_media(path, media_filter)
         found_list = []
 
         for fp in file_list:
@@ -130,12 +271,20 @@ class MediaProcessor:
         return found_list
 
     @staticmethod
-    def _rfind_media(path) -> list[str]:
-        logging.getLogger("MEDIA").debug(f"_rfind_media scanning for media in {path}")
-        file_list = []
+    def _rfind_media(path, media_filter="video") -> list[str]:
+        logging.getLogger("MEDIA").debug(f"_rfind_media scanning for media in {path} with filter={media_filter}")
 
+        # Determine which formats to scan based on filter
+        if media_filter == "audio":
+            formats_to_scan = MediaProcessor.AUDIO_FORMATS
+        elif media_filter == "video":
+            formats_to_scan = MediaProcessor.VIDEO_FORMATS
+        else:  # "mixed"
+            formats_to_scan = MediaProcessor.supported_formats
+
+        file_list = []
         # get all the files
-        for ext in MediaProcessor.supported_formats:
+        for ext in formats_to_scan:
             # this_format = directory.rglob(f"*.{ext}")
             this_format = glob.glob(f"{path}/**/*.{ext}", recursive=True)
             file_list += this_format
@@ -155,6 +304,8 @@ class MediaProcessor:
             hints.append(RangeHint(base))
         if DayPartHint.test_pattern(base):
             hints.append(DayPartHint(base))
+        if DayofWeekHint.test_pattern(base):
+            hints.append(DayofWeekHint(base))
         if bumpdir:
             if BumpHint.test_pattern(base):
                 hints.append(BumpHint(base))
@@ -162,13 +313,39 @@ class MediaProcessor:
         return hints
 
     @staticmethod
-    def _process_subs(dir_path, tag, bumpdir=False, fluid=None):
-        subs = [f.path for f in os.scandir(dir_path) if f.is_dir()]
+    def _process_subs(dir_path, tag, bumpdir=False, fluid=None, content_type="feature", media_filter="video"):
+        """Process all subdirectories recursively, collecting hints from all levels"""
+        from collections import defaultdict
+
+        # Get all media files in subdirectories only (root files are handled by _scan_directory)
+        root = os.path.abspath(dir_path)
+        all_files = [
+            f for f in MediaProcessor._rfind_media(dir_path, media_filter)
+            if os.path.dirname(os.path.abspath(f)) != root
+        ]
+
+        # Group files by their immediate parent directory
+        files_by_dir = defaultdict(list)
+        for f in all_files:
+            parent = os.path.dirname(f)
+            files_by_dir[parent].append(f)
+
         clips = []
-        for sub in subs:
-            file_list = MediaProcessor._rfind_media(sub)
-            hints = MediaProcessor._process_hints(sub, tag, bumpdir)
-            clips += MediaProcessor._process_media(file_list, tag, hints=hints, fluid=fluid)
+
+        # Process each directory group
+        for media_dir, file_list in files_by_dir.items():
+            # Collect hints from all path components
+            hints = []
+            rel_path = os.path.relpath(media_dir, dir_path)
+
+            if rel_path != '.':
+                path_parts = rel_path.split(os.sep)
+                for part in path_parts:
+                    hints += MediaProcessor._process_hints(part, tag, bumpdir)
+
+            # Process all files in this directory with these hints
+            clips += MediaProcessor._process_media(file_list, tag, hints=hints, fluid=fluid, content_type=content_type)
+
         return clips
 
     @staticmethod
@@ -204,14 +381,28 @@ class MediaProcessor:
     @staticmethod
     def calc_black_segments(break_points, content_duration):
         # ensure start ordering
-        break_points = sorted(break_points, key=lambda k: k["black_start"])
+        break_points = sorted(break_points, key=lambda k: k["chapter_start"])
+
+        # ensure coverage starts at 0 - handles containers (e.g. MKV) where
+        # the first chapter marker doesn't have to start at 0
+        if break_points and break_points[0]["chapter_start"] > 0:
+            break_points.insert(0, {
+                "chapter_start": 0.0,
+                "chapter_end": break_points[0]["chapter_start"],
+            })
         for i in range(len(break_points)):
             if i < len(break_points) - 1:
                 break_points[i]["segment_duration"] = (
-                    break_points[i + 1]["black_start"] - break_points[i]["black_start"]
+                    break_points[i + 1]["chapter_start"] - break_points[i]["chapter_start"]
                 )
+                # Preserve or calculate chapter_end
+                if "chapter_end" not in break_points[i]:
+                    break_points[i]["chapter_end"] = break_points[i + 1]["chapter_start"]
             else:
-                break_points[i]["segment_duration"] = content_duration - break_points[i]["black_start"]
+                break_points[i]["segment_duration"] = content_duration - break_points[i]["chapter_start"]
+                # Preserve or calculate chapter_end
+                if "chapter_end" not in break_points[i]:
+                    break_points[i]["chapter_end"] = content_duration
 
         return break_points
 
@@ -240,8 +431,8 @@ class MediaProcessor:
             # Actually run the command and capture its output
             stdout, stderr = filter_complex.run(capture_stdout=True, capture_stderr=True)
 
-            # Decode and parse
-            black_frames = []
+            # Decode and parse - collect all black frame midpoints
+            black_midpoints = []
             for line in stderr.decode("utf-8").split("\n"):
                 if "blackdetect" in line:
                     try:
@@ -256,7 +447,9 @@ class MediaProcessor:
                                 # then not a good line
                                 continue
 
-                            black_frames.append(info)
+                            # Calculate middle of black frame as the break point
+                            midpoint = (info["black_start"] + info["black_end"]) / 2
+                            black_midpoints.append(midpoint)
 
                     except IndexError:
                         _l.debug(f"Skipping malformed line: {line}")
@@ -266,15 +459,32 @@ class MediaProcessor:
                         pass
                     except Exception as e:
                         _l.info(f"An unexpected error occurred while parsing line: {line}. Error: {e}")
-            _l.info(f"Found {len(black_frames)} black segments in {fname}")
+            _l.info(f"Found {len(black_midpoints)} black segments in {fname}")
 
-            trimmed = []
-            # trim any near start and end times
-            for point in black_frames:
-                if point["black_start"] > timings.MIN_1 and point["black_start"] < base_duration - timings.MIN_1:
-                    trimmed.append(point)
+            # Trim any near start and end times
+            trimmed_midpoints = []
+            for midpoint in black_midpoints:
+                if midpoint > timings.MIN_1 and midpoint < base_duration - timings.MIN_1:
+                    trimmed_midpoints.append(midpoint)
 
-            segmented = MediaProcessor.calc_black_segments(trimmed, base_duration)
+            # Convert midpoints to segment format: each segment goes from previous break to current break
+            segments = []
+            prev_point = 0
+            for midpoint in trimmed_midpoints:
+                segments.append({
+                    "chapter_start": prev_point,
+                    "chapter_end": midpoint,
+                })
+                prev_point = midpoint
+
+            # Add final segment from last break to end of content
+            if trimmed_midpoints:
+                segments.append({
+                    "chapter_start": prev_point,
+                    "chapter_end": base_duration,
+                })
+
+            segmented = MediaProcessor.calc_black_segments(segments, base_duration)
 
             while min_segment(segmented) < timings.MIN_1 and len(segmented) > 1:
                 segmented = remove_min(segmented)
@@ -284,6 +494,71 @@ class MediaProcessor:
 
         except Exception as e:
             _l.error(f"FFmpeg hit an error detecting black frames in {fname}")
+            _l.exception(e)
+
+        return None
+
+    @staticmethod
+    def chapter_detect(fname, base_duration):
+        import subprocess
+        import json
+
+        _l = logging.getLogger("MEDIA")
+
+        if base_duration < timings.MIN_5:
+            _l.info(f"Skipping chapter markers in less than 5 minutes: {fname}")
+            return None
+
+        _l.info(f"Detecting chapter markers in {fname}")
+
+        try:
+            # Use ffprobe with -show_chapters to extract chapter information
+            result = subprocess.run(
+                ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_chapters", fname],
+                capture_output=True,
+                text=True,
+            )
+
+            probed = json.loads(result.stdout)
+
+            chapters = []
+            if "chapters" in probed and len(probed["chapters"]) > 0:
+                for chapter in probed["chapters"]:
+                    chapter_info = {
+                        "chapter_start": float(chapter["start_time"]),
+                        "chapter_end": float(chapter["end_time"]),
+                    }
+
+                    # Add title if available
+                    if "tags" in chapter and "title" in chapter["tags"]:
+                        chapter_info["title"] = chapter["tags"]["title"]
+
+                    chapters.append(chapter_info)
+
+                _l.info(f"Found {len(chapters)} chapter markers in {fname}")
+
+                # ensure coverage starts at 0 - handles containers (e.g. MKV) where
+                # the first chapter marker doesn't have to start at 0
+                if chapters[0]["chapter_start"] > 0:
+                    chapters.insert(0, {
+                        "chapter_start": 0.0,
+                        "chapter_end": chapters[0]["chapter_start"],
+                    })
+
+                # Calculate segment durations
+                for i in range(len(chapters)):
+                    if i < len(chapters) - 1:
+                        chapters[i]["segment_duration"] = chapters[i + 1]["chapter_start"] - chapters[i]["chapter_start"]
+                    else:
+                        chapters[i]["segment_duration"] = base_duration - chapters[i]["chapter_start"]
+
+                return chapters
+            else:
+                _l.info(f"No chapter markers found in {fname}")
+                return []
+
+        except Exception as e:
+            _l.error(f"Error detecting chapter markers in {fname}")
             _l.exception(e)
 
         return None

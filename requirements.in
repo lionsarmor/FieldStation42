@@ -1,9 +1,0 @@
-moviepy==2.1.1
-python-mpv-jsonipc
-pyserial
-textual
-ffmpeg-python
-fastapi
-uvicorn
-glfw
-PyOpenGL
