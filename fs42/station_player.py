@@ -10,6 +10,7 @@ import glob
 import random
 import logging
 import time
+from pathlib import Path
 from python_mpv_jsonipc import MPV
 
 from fs42.guide_tk import guide_channel_runner, GuideCommands
@@ -39,6 +40,7 @@ from fs42.liquid_manager import LiquidManager, PlayPoint, ScheduleNotFound, Sche
 from fs42.liquid_schedule import LiquidSchedule
 from fs42.station_manager import StationManager
 from fs42.slot_reader import SlotReader
+from fs42.config import resolve_media_path, resolve_project_path
 
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
 
@@ -61,6 +63,7 @@ def update_status_socket(
     if content_type is not None:
         status_obj["content_type"] = content_type
     status_socket = StationManager().server_conf["status_socket"]
+    Path(status_socket).parent.mkdir(parents=True, exist_ok=True)
     as_str = json.dumps(status_obj)
     with open(status_socket, "w") as fp:
         fp.write(as_str)
@@ -164,24 +167,38 @@ class StationPlayer:
 
         start_it = True
 
-        if "start_mpv" in StationManager().server_conf:
-            start_it = StationManager().server_conf["start_mpv"]
+        server_conf = StationManager().server_conf
+
+        if "start_mpv" in server_conf:
+            start_it = server_conf["start_mpv"]
 
         if not mpv:
             self._l.info("Starting MPV instance")
             # command on client: mpv --input-ipc-server=/tmp/mpvsocket --idle --force-window 
 
             # if not running on trixie
-            self.mpv = MPV(
-                start_mpv=start_it,
-                ipc_socket="/tmp/mpvsocket",
-                input_default_bindings=False,
-                fs=True,
-                idle=True,
-                force_window=True,
-                script_opts="osc-idlescreen=no",
-                hr_seek="yes",
-            )
+            fullscreen = bool(server_conf.get("fullscreen", True))
+            width = int(server_conf.get("window_width", 1280))
+            height = int(server_conf.get("window_height", 720))
+            mpv_options = {
+                "start_mpv": start_it,
+                "ipc_socket": "/tmp/mpvsocket",
+                "input_default_bindings": False,
+                "fs": fullscreen,
+                "idle": True,
+                "force_window": True,
+                "script_opts": "osc-idlescreen=no",
+                "hr_seek": "yes",
+            }
+            if not fullscreen:
+                mpv_options.update(
+                    {
+                        "geometry": f"{width}x{height}",
+                        "autofit": f"{width}x{height}",
+                        "border": True,
+                    }
+                )
+            self.mpv = MPV(**mpv_options)
 
         self.station_config = station_config
         # self.playlist = self.read_json(runtime_filepath)
@@ -329,9 +346,21 @@ class StationPlayer:
 
     def play_file(self, file_path, file_duration=None, current_time=None, is_stream=False, title="Unknown", content_type=None, media_type=None):
         try:
-            if os.path.exists(file_path) or is_stream or AutoBumpAgent.is_autobump_url(file_path):
-                self._l.debug(f"%%%Attempting to play {file_path}")
-                self.current_playing_file_path = file_path
+            resolved_file_path = file_path
+            if not is_stream and not AutoBumpAgent.is_autobump_url(file_path):
+                if os.path.exists(file_path):
+                    resolved_file_path = str(Path(file_path).expanduser())
+                else:
+                    project_candidate = resolve_project_path(file_path)
+                    media_candidate = resolve_media_path(file_path, StationManager().server_conf)
+                    if project_candidate.exists():
+                        resolved_file_path = str(project_candidate)
+                    elif media_candidate.exists():
+                        resolved_file_path = str(media_candidate)
+
+            if os.path.exists(resolved_file_path) or is_stream or AutoBumpAgent.is_autobump_url(resolved_file_path):
+                self._l.debug(f"%%%Attempting to play {resolved_file_path}")
+                self.current_playing_file_path = resolved_file_path
 
                 if self.station_config:
                     self._l.debug("Got station config, updating status socket")
@@ -351,7 +380,7 @@ class StationPlayer:
                         title,
                         timestamp=ts_format,
                         duration=duration,
-                        file_path=file_path,
+                        file_path=resolved_file_path,
                         content_type=content_type,
                     )
                           
@@ -362,9 +391,9 @@ class StationPlayer:
                 
                                 #now see if this is an autobump
 
-                if AutoBumpAgent.is_autobump_url(file_path):
+                if AutoBumpAgent.is_autobump_url(resolved_file_path):
                     from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-                    web_url = AutoBumpAgent.extract_url(file_path)
+                    web_url = AutoBumpAgent.extract_url(resolved_file_path)
                     remaining = file_duration - (current_time or 0) if file_duration else None
                     if remaining is not None:
                         parsed = urlparse(web_url)
@@ -392,9 +421,9 @@ class StationPlayer:
                 self._apply_vfx(datetime.datetime.now())
 
                 # self.mpv.vf = "lavfi=[]"
-                self._l.info(f"playing {file_path}")
+                self._l.info(f"playing {resolved_file_path}")
                 self.mpv.command("playlist-clear")
-                self.mpv.play(file_path)
+                self.mpv.play(resolved_file_path)
                 
 
                 timeout_seconds = StationManager().server_conf.get("video_seek_timeout", 10)
@@ -405,7 +434,7 @@ class StationPlayer:
                         if self.mpv.time_pos is not None:
                             break
                         if time.time() - start_time > timeout_seconds:
-                            self._l.error(f"Timeout waiting for playback to start on {file_path}")
+                            self._l.error(f"Timeout waiting for playback to start on {resolved_file_path}")
                             return False
                         if is_stream:
                             response = self.input_check_fn()
@@ -425,19 +454,19 @@ class StationPlayer:
                         self.mpv.command("seek", current_time, "absolute")
                         self._l.info(f"Seeking to: {current_time}")
                     except Exception as e:
-                        self._l.error(f"Failed seeking {current_time} on {file_path}: {e}")
+                        self._l.error(f"Failed seeking {current_time} on {resolved_file_path}: {e}")
 
                 # Show Now Playing overlay for audio feature files
                 self._l.info(f"Media type: {media_type}, Content type: {content_type}")
                 if media_type == 'audio' and content_type == 'feature':
-                    self._show_now_playing(file_path)
+                    self._show_now_playing(resolved_file_path)
                 elif media_type == 'video':
                     # Always close any existing overlay when a new video starts,
                     # then spawn a new one only if this video has an NFO sidecar.
                     self._close_now_playing()
                     try:
                         from fs42.nfo_agent import NFOAgent
-                        nfo_data = NFOAgent.read_nfo(file_path)
+                        nfo_data = NFOAgent.read_nfo(resolved_file_path)
                         if nfo_data:
                             play_duration = None
                             if file_duration is not None:
@@ -449,7 +478,7 @@ class StationPlayer:
                 return True
             else:
                 self._l.error(
-                    f"Trying to play file {file_path} but it doesn't exist - check your configuration and try again."
+                    f"Trying to play file {file_path} but it doesn't exist. Resolved path: {resolved_file_path}"
                 )
                 return False
         except Exception as e:

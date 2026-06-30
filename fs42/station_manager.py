@@ -2,6 +2,7 @@ import logging
 import os
 from fs42.slot_reader import SlotReader
 from fs42.station_io import StationIO
+from fs42.config import day_parts_to_ranges, load_config
 
 class StationManager(object):
     # the borg singleton pattern
@@ -45,7 +46,25 @@ class StationManager(object):
                     "server_port": 4242,
                     "title_patterns": [],
                     "video_seek_timeout": 10,
+                    "fullscreen": True,
+                    "window_width": 1280,
+                    "window_height": 720,
+                    "osd_scale": 1.0,
+                    "media_root": "",
+                    "mega_remote": "",
+                    "mega_mount_point": "~/mega",
+                    "first_run_complete": False,
+                    "auto_sync_media_links": True,
+                    "logs_dir": "logs",
+                    "compiled_schedule_dir": "runtime/schedules",
+                    "compiled_remote_path": "FS42_MEDIA/Compiled",
+                    "auto_sync_compiled": True,
                 }
+                for key, value in load_config().items():
+                    if key == "day_parts":
+                        self.server_conf[key] = day_parts_to_ranges(value)
+                    else:
+                        self.server_conf[key] = value
                 self._number_index = {}
                 self._name_index = {}
                 self.load_main_config()
@@ -100,7 +119,7 @@ class StationManager(object):
 
     def load_main_config(self):
         _l = logging.getLogger("STATIONMANAGER")
-        d = self.station_io.load_main_config()
+        d = load_config()
 
         if d is not None:
             try:
@@ -118,7 +137,21 @@ class StationManager(object):
                     "schedule_agent",
                     "video_seek_timeout",
                     "overlay_conf",
-                    "start_channel"
+                    "start_channel",
+                    "fullscreen",
+                    "window_width",
+                    "window_height",
+                    "osd_scale",
+                    "media_root",
+                    "mega_remote",
+                    "mega_mount_point",
+                    "first_run_complete",
+                    "auto_sync_media_links",
+                    "mega_mount_options",
+                    "logs_dir",
+                    "compiled_schedule_dir",
+                    "compiled_remote_path",
+                    "auto_sync_compiled",
                 ]
 
                 for key in to_check:

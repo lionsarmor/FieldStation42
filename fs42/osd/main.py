@@ -2,25 +2,31 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+import argparse
 import glfw
 from pydantic import BaseModel
 from enum import Enum
 
-from render import Text, create_window, clear_screen
-from logo_display import LogoDisplay, LogoDisplayConfig
+try:
+    from .render import Text, create_window, clear_screen
+    from .logo_display import LogoDisplay, LogoDisplayConfig
+except ImportError:
+    from render import Text, create_window, clear_screen
+    from logo_display import LogoDisplay, LogoDisplayConfig
 from OpenGL.GL import *
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from fs42.station_manager import StationManager
+from fs42.config import apply_cli_overrides
 from fs42.osd.content_classifier import (
     ContentClassifier,
     ContentType,
     classify_current_content,
 )
 
-SOCKET_FILE = "runtime/play_status.socket"
+SOCKET_FILE = StationManager().server_conf["status_socket"]
 CONFIG_FILE_PATH = Path("osd/osd.json")
 
 
@@ -116,7 +122,26 @@ class StatusDisplay(object):
 
 objects = []
 
-window = create_window()
+parser = argparse.ArgumentParser(description="FieldStation42 OSD")
+parser.add_argument("--windowed", action="store_true", help="Render OSD in a desktop window.")
+parser.add_argument("--fullscreen", action="store_true", help="Render OSD fullscreen.")
+parser.add_argument("--window-width", type=int, help="Window width for windowed OSD.")
+parser.add_argument("--window-height", type=int, help="Window height for windowed OSD.")
+args = parser.parse_args()
+
+manager = StationManager()
+manager.server_conf.update(apply_cli_overrides({}, args))
+osd_scale = float(manager.server_conf.get("osd_scale", 1.0))
+fullscreen = bool(manager.server_conf.get("fullscreen", True))
+window_width = int(manager.server_conf.get("window_width", 1280))
+window_height = int(manager.server_conf.get("window_height", 720))
+
+window = create_window(
+    fullscreen=fullscreen,
+    width=window_width,
+    height=window_height,
+    resizable=not fullscreen,
+)
 
 if CONFIG_FILE_PATH.exists():
     with open(CONFIG_FILE_PATH, "r") as f:
@@ -126,6 +151,8 @@ if CONFIG_FILE_PATH.exists():
                 obj["type"] = "StatusDisplay"
             if obj["type"] == "StatusDisplay":
                 del obj["type"]
+                if "font_size" in obj:
+                    obj["font_size"] = max(1, int(obj["font_size"] * osd_scale))
                 config = StatusDisplayConfig.model_validate(obj)
                 osd = StatusDisplay(window, config)
                 objects.append(osd)
@@ -140,8 +167,8 @@ if CONFIG_FILE_PATH.exists():
                 config_logo = LogoDisplayConfig.model_validate(obj)
                 status_osd = StatusDisplay(window, config_status)
                 status_logo = LogoDisplay(window, config_logo)
-                objects.append(logo)
-                objects.append(osd)
+                objects.append(status_logo)
+                objects.append(status_osd)
             else:
                 print(f"Unrecognized osd object type: {obj['type']}")
 

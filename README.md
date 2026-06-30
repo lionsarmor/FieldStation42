@@ -46,6 +46,23 @@ Then open a browser and go to `http://localhost:4242` to configure your first ch
 
 For the full step-by-step walkthrough, see the [Getting Started guide](https://fieldstation42.com/docs/).
 
+### Portable Launcher Commands
+
+This checkout also includes a portable launcher for MEGA/rclone media libraries:
+
+```bash
+./launch.sh --windowed
+./launch.sh --fullscreen
+./launch.sh --doctor
+./launch.sh --validate
+./launch.sh --discover-media-channels
+./launch.sh --sync-media-links
+./launch.sh --upload-compiled
+./launch.sh --sync-compiled
+```
+
+See [docs/portable-launcher-and-validation.md](docs/portable-launcher-and-validation.md) for the plain-English workflow.
+
 ![An older TV with an antenna rotator box in the background](docs/retro-tv.png?raw=true)
 
 ## Requirements
@@ -61,7 +78,6 @@ If you're getting value from FieldStation42, consider supporting it on [Patreon]
 ## Contributing
 
 Bug reports, feature requests, and pull requests are welcome. Please open an issue before submitting large changes.
-
 
 
 

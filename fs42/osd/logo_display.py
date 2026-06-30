@@ -9,7 +9,10 @@ import glfw
 from pydantic import BaseModel
 from enum import Enum
 
-from render import load_texture
+try:
+    from .render import load_texture
+except ImportError:
+    from render import load_texture
 from OpenGL.GL import *
 
 project_root = Path(__file__).parent.parent.parent

@@ -56,10 +56,12 @@ class Text(object):
 
     @property
     def width(self):
+        self.window_width, self.window_height = glfw.get_framebuffer_size(self.window)
         return self.tex_size[0] * 2 / self.window_width * self.expansion_factor
 
     @property
     def height(self):
+        self.window_width, self.window_height = glfw.get_framebuffer_size(self.window)
         return self.tex_size[1] * 2 / self.window_height * self.expansion_factor
 
     def render_text_texture(self):
@@ -139,7 +141,7 @@ def load_texture(path):
 
     return texture, width, height
 
-def create_window():
+def create_window(fullscreen=True, width=1280, height=720, resizable=False):
     # --------------------------
     # Init GLFW and OpenGL
     if not glfw.init():
@@ -148,18 +150,23 @@ def create_window():
     # TODO: figure out which monitor to use
     # should be the one that mpv is currently on....
 
-    monitor = glfw.get_primary_monitor()
-    mode = glfw.get_video_mode(monitor)
+    monitor = glfw.get_primary_monitor() if fullscreen else None
+    mode = glfw.get_video_mode(glfw.get_primary_monitor())
+    window_width = mode.size.width if fullscreen else width
+    window_height = mode.size.height if fullscreen else height
 
     glfw.window_hint(glfw.TRANSPARENT_FRAMEBUFFER, glfw.TRUE)
-    glfw.window_hint(glfw.DECORATED, glfw.FALSE)
-    glfw.window_hint(glfw.FLOATING, glfw.TRUE)
+    glfw.window_hint(glfw.DECORATED, glfw.FALSE if fullscreen else glfw.TRUE)
+    glfw.window_hint(glfw.FLOATING, glfw.TRUE if fullscreen else glfw.FALSE)
     glfw.window_hint(glfw.FOCUSED, glfw.TRUE)
     glfw.window_hint(glfw.AUTO_ICONIFY, glfw.FALSE)
-    glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
-    window = glfw.create_window(mode.size.width, mode.size.height, "FieldStation42 OSD", monitor, None)
+    glfw.window_hint(glfw.RESIZABLE, glfw.TRUE if resizable else glfw.FALSE)
+    window = glfw.create_window(window_width, window_height, "FieldStation42 OSD", monitor, None)
     glfw.make_context_current(window)
-    glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+    glViewport(0, 0, window_width, window_height)
+    glfw.set_framebuffer_size_callback(window, lambda _window, w, h: glViewport(0, 0, w, h))
+    if fullscreen:
+        glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
     # Enable blending for alpha
     glEnable(GL_BLEND)

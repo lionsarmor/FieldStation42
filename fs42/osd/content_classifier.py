@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from fs42.station_manager import StationManager
+
 
 class ContentType:
     """Content type constants matching the values in play_status.socket"""
@@ -25,7 +27,9 @@ class ContentClassifier:
     infer content type from file paths.
     """
 
-    def __init__(self, socket_file: str = "runtime/play_status.socket"):
+    def __init__(self, socket_file: str | None = None):
+        if socket_file is None:
+            socket_file = StationManager().server_conf["status_socket"]
         self.socket_file = Path(socket_file)
 
     def _read_socket_status(self) -> Optional[Dict[str, Any]]:
@@ -67,7 +71,6 @@ class ContentClassifier:
         """
         return self.classify_from_socket()
 
-def classify_current_content(socket_file: str = "runtime/play_status.socket") -> str:
+def classify_current_content(socket_file: str | None = None) -> str:
     classifier = ContentClassifier(socket_file)
     return classifier.classify_from_socket()
-

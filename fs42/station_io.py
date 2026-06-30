@@ -8,6 +8,7 @@ import datetime
 from fs42.config_processor import ConfigProcessor
 from fs42 import schedule_hint
 from fs42 import timings
+from fs42.config import load_config, normalize_station_config
 
 
 class StationIO:
@@ -242,6 +243,9 @@ class StationIO:
         for key in StationIO.OVERWATCH_DEFAULTS:
             if key not in station_conf:
                 station_conf[key] = StationIO.OVERWATCH_DEFAULTS[key]
+
+        station_conf = normalize_station_config(station_conf, load_config())
+        config_data["station_conf"] = station_conf
 
         # Check that referenced files exist
         for to_check in StationIO.FILE_CHECKS:

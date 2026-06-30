@@ -7,6 +7,7 @@ import json
 import shelve
 import signal
 import logging
+from pathlib import Path
 
 from fs42.liquid_manager import LiquidManager
 from fs42.station_manager import StationManager
@@ -24,6 +25,8 @@ from fs42.reception import (
     none_change_effect,
 )
 from fs42.live_schedule_agent import LiveScheduleAgent
+from fs42.config import apply_cli_overrides
+from fs42.logging_setup import setup_logging
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO
@@ -80,6 +83,8 @@ def input_check():
 
 
     channel_socket = StationManager().server_conf["channel_socket"]
+    Path(channel_socket).parent.mkdir(parents=True, exist_ok=True)
+    Path(channel_socket).touch(exist_ok=True)
     with open(channel_socket, "r") as r_sock:
         contents = r_sock.read()
     if len(contents):
@@ -91,8 +96,10 @@ def input_check():
 
 
 
-def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=None):
+def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=None, config_overrides=None):
     manager = StationManager()
+    if config_overrides:
+        manager.server_conf.update(config_overrides)
     reception = ReceptionStatus()
     logger = logging.getLogger("MainLoop")
     logger.info("Starting main loop")
@@ -106,9 +113,10 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
     else:
         logger.info("Live schedule agent is not configured")
 
-    channel_socket = StationManager().server_conf["channel_socket"]
+    channel_socket = manager.server_conf["channel_socket"]
 
     # go ahead and clear the channel socket (or create if it doesn't exist)
+    Path(channel_socket).parent.mkdir(parents=True, exist_ok=True)
     with open(channel_socket, "w"):
         pass
 
@@ -348,6 +356,26 @@ if __name__ == "__main__":
         action="store_true",
         help="Do not start the web API server process.",
     )
+    parser.add_argument(
+        "--windowed",
+        action="store_true",
+        help="Run playback in a normal desktop window.",
+    )
+    parser.add_argument(
+        "--fullscreen",
+        action="store_true",
+        help="Run playback fullscreen. This is the default unless config says otherwise.",
+    )
+    parser.add_argument(
+        "--window-width",
+        type=int,
+        help="Window width to use with --windowed or fullscreen=false config.",
+    )
+    parser.add_argument(
+        "--window-height",
+        type=int,
+        help="Window height to use with --windowed or fullscreen=false config.",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -359,6 +387,8 @@ if __name__ == "__main__":
         fh.setFormatter(formatter)
 
         logging.getLogger().addHandler(fh)
+    else:
+        setup_logging("player", "player.log", verbose=args.verbose)
 
     trans_fn = short_change_effect
 
@@ -388,9 +418,16 @@ if __name__ == "__main__":
         api_proc = None
 
     schedule_lock = multiprocessing.Lock()
+    runtime_overrides = apply_cli_overrides({}, args)
 
     try:
-        main_loop(trans_fn, shutdown_queue=shutdown_queue, api_proc=api_proc, schedule_lock=schedule_lock)
+        main_loop(
+            trans_fn,
+            shutdown_queue=shutdown_queue,
+            api_proc=api_proc,
+            schedule_lock=schedule_lock,
+            config_overrides=runtime_overrides,
+        )
     finally:
         if shutdown_queue is not None:
             shutdown_queue.put("shutdown")
