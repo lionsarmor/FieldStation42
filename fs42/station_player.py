@@ -41,6 +41,7 @@ from fs42.liquid_schedule import LiquidSchedule
 from fs42.station_manager import StationManager
 from fs42.slot_reader import SlotReader
 from fs42.config import resolve_media_path, resolve_project_path
+from fs42.channel_control import write_channel_command
 
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
 
@@ -199,6 +200,8 @@ class StationPlayer:
                     }
                 )
             self.mpv = MPV(**mpv_options)
+        else:
+            self.mpv = mpv
 
         self.station_config = station_config
         # self.playlist = self.read_json(runtime_filepath)
@@ -214,6 +217,23 @@ class StationPlayer:
         self.schedule_lock = None
         self._active_afx = None
         self._pending_response = None
+        self.bind_channel_key_controls()
+
+    def bind_channel_key_controls(self):
+        if not hasattr(self.mpv, "bind_key_press"):
+            return
+
+        for key_name, command in (("UP", "up"), ("DOWN", "down")):
+            try:
+                self.mpv.bind_key_press(
+                    key_name,
+                    lambda command=command: write_channel_command(
+                        command,
+                        channel_socket=StationManager().server_conf["channel_socket"],
+                    ),
+                )
+            except Exception as exc:
+                self._l.warning(f"Could not bind MPV {key_name} key for channel {command}: {exc}")
 
     def load_up(self):
         start_time = time.perf_counter()

@@ -19,6 +19,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from fs42.station_manager import StationManager
+from fs42.channel_control import write_channel_command
 from fs42.config import apply_cli_overrides
 from fs42.osd.content_classifier import (
     ContentClassifier,
@@ -142,6 +143,18 @@ window = create_window(
     height=window_height,
     resizable=not fullscreen,
 )
+
+
+def key_callback(window, key, scancode, action, mods):
+    if action != glfw.PRESS:
+        return
+    if key == glfw.KEY_UP:
+        write_channel_command("up", channel_socket=manager.server_conf["channel_socket"])
+    elif key == glfw.KEY_DOWN:
+        write_channel_command("down", channel_socket=manager.server_conf["channel_socket"])
+
+
+glfw.set_key_callback(window, key_callback)
 
 if CONFIG_FILE_PATH.exists():
     with open(CONFIG_FILE_PATH, "r") as f:

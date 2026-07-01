@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from fs42.channel_validator import validate_channels
+from fs42.compiled_sync import compiled_db_counts
 from fs42.config import PROJECT_ROOT, config_path, load_config
 from fs42.mega import is_mount_point, list_remotes, rclone_available
 
@@ -78,10 +79,14 @@ def run_doctor(strict_channels: bool = False) -> DoctorReport:
 
     schedule_dir = Path(config.get("compiled_schedule_dir") or runtime_dir / "schedules")
     schedules = list(schedule_dir.glob("*.pkl")) if schedule_dir.exists() else []
-    if schedules:
-        report.pass_("compiled schedules", f"{len(schedules)} file(s) in {schedule_dir}")
+    db_counts = compiled_db_counts(config)
+    if schedules or db_counts["schedule_blocks"] > 0:
+        detail = f"{db_counts['schedule_blocks']} DB block(s)"
+        if schedules:
+            detail += f"; {len(schedules)} legacy file(s) in {schedule_dir}"
+        report.pass_("compiled schedules", detail)
     else:
-        report.fail("compiled schedules", f"No .pkl schedules in {schedule_dir}")
+        report.fail("compiled schedules", f"No DB schedule blocks or .pkl schedules in {schedule_dir}")
 
     media_root = config.get("media_root")
     if media_root:

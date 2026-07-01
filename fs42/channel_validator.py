@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pickle
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -14,7 +15,9 @@ from fs42.logging_setup import setup_logging
 
 MEDIA_EXTENSIONS = {".mp4", ".mpg", ".mpeg", ".avi", ".mov", ".mkv", ".ts", ".m4v", ".webm", ".wmv"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
-NO_SCHEDULE_TYPES = {"guide", "streaming"}
+NO_CATALOG_TYPES = {"guide", "streaming", "web"}
+NO_SCHEDULE_TYPES = {"guide", "streaming", "web"}
+AUTOBUMP_PREFIX = ":autobump:="
 
 
 @dataclass
@@ -124,6 +127,55 @@ def resolve_media_reference(path_value: str) -> Path:
     if path.is_absolute():
         return path
     return PROJECT_ROOT / path
+
+
+def runtime_db_path(station: dict) -> Path | None:
+    server_config = station.get("_server_config") or load_config()
+    db_value = server_config.get("db_path")
+    if not db_value:
+        return None
+    return Path(db_value)
+
+
+def catalog_entry_count(station: dict) -> tuple[int | None, str, Path | None]:
+    db_path = runtime_db_path(station)
+    if not db_path or not db_path.exists():
+        return None, "Runtime database is missing.", db_path
+
+    name = station.get("network_name", "<unnamed>")
+    try:
+        with sqlite3.connect(db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute("SELECT COUNT(*) FROM catalog_entries WHERE station = ?", (name,))
+            row = cursor.fetchone()
+    except sqlite3.Error as exc:
+        return None, str(exc), db_path
+
+    return int(row[0] if row else 0), "", db_path
+
+
+def schedule_rows(station: dict) -> tuple[list[tuple[str, str, str]] | None, str, Path | None]:
+    db_path = runtime_db_path(station)
+    if not db_path or not db_path.exists():
+        return None, "Runtime database is missing.", db_path
+
+    name = station.get("network_name", "<unnamed>")
+    try:
+        with sqlite3.connect(db_path) as connection:
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT start_time, end_time, plan_json FROM liquid_blocks WHERE station = ? ORDER BY start_time",
+                (name,),
+            )
+            rows = cursor.fetchall()
+    except sqlite3.Error as exc:
+        return None, str(exc), db_path
+
+    return rows, "", db_path
+
+
+def is_virtual_media_reference(path_value: str) -> bool:
+    return path_value.startswith(AUTOBUMP_PREFIX)
 
 
 def collect_object_paths(obj, seen: set[int] | None = None, depth: int = 0) -> set[str]:
@@ -242,31 +294,25 @@ def validate_station_paths(station: dict, report: ValidationReport):
         report.warning(name, "No artwork/logo directory configured.")
 
 
-def validate_schedule(station: dict, report: ValidationReport):
+def validate_legacy_schedule(station: dict, report: ValidationReport) -> bool:
     name = station.get("network_name", "<unnamed>")
-    network_type = station.get("network_type", "standard")
-    if network_type in NO_SCHEDULE_TYPES:
-        return
-
     schedule_value = station.get("schedule_path")
     if not schedule_value:
-        report.error(name, "Missing schedule_path.")
-        return
+        return False
     schedule_path = Path(schedule_value)
     if not schedule_path.exists():
-        report.error(name, "Schedule file is missing.", str(schedule_path))
-        return
+        return False
 
     try:
         with schedule_path.open("rb") as schedule_file:
             schedule = pickle.load(schedule_file)
     except Exception as exc:
         report.error(name, "Schedule file could not be loaded.", str(exc))
-        return
+        return True
 
     if not schedule:
         report.error(name, "Schedule exists but contains no programming blocks.", str(schedule_path))
-        return
+        return True
 
     previous_end = None
     missing_media = set()
@@ -294,13 +340,13 @@ def validate_schedule(station: dict, report: ValidationReport):
             is_stream = getattr(entry, "is_stream", False)
             if not entry_path:
                 report.error(name, f"Schedule block {index}, playlist entry {plan_index} is missing a media path.")
-            elif not is_stream and not is_url(entry_path):
+            elif not is_stream and not is_url(entry_path) and not is_virtual_media_reference(entry_path):
                 resolved = resolve_media_reference(entry_path)
                 if not resolved.exists():
                     missing_media.add(str(resolved))
 
     for path_value in collect_object_paths(schedule):
-        if is_url(path_value):
+        if is_url(path_value) or is_virtual_media_reference(path_value):
             continue
         resolved = resolve_media_reference(path_value)
         if not resolved.exists():
@@ -309,28 +355,125 @@ def validate_schedule(station: dict, report: ValidationReport):
     for missing_path in sorted(missing_media):
         report.error(name, "Scheduled media file is missing.", missing_path)
 
+    return True
 
-def validate_catalog(station: dict, report: ValidationReport):
+
+def validate_database_schedule(station: dict, rows: list[tuple], report: ValidationReport):
+    name = station.get("network_name", "<unnamed>")
+    if not rows:
+        db_path = runtime_db_path(station)
+        report.error(name, "Schedule has no programming blocks in runtime database.", str(db_path or ""))
+        return
+
+    previous_end = None
+    missing_media = set()
+    for index, row in enumerate(rows):
+        start_value, end_value, plan_value = row
+        try:
+            start = datetime.datetime.fromisoformat(str(start_value))
+            end = datetime.datetime.fromisoformat(str(end_value))
+        except ValueError:
+            report.error(name, f"Schedule block {index} has invalid timestamps.", f"{start_value} -> {end_value}")
+            continue
+
+        if start >= end:
+            report.error(name, f"Schedule block {index} starts after or at its end.", f"{start} >= {end}")
+        elif previous_end and start < previous_end:
+            report.error(name, f"Schedule block {index} overlaps the previous block.", f"{start} < {previous_end}")
+        previous_end = end
+
+        try:
+            plan = json.loads(plan_value) if plan_value else []
+        except (TypeError, json.JSONDecodeError) as exc:
+            report.error(name, f"Schedule block {index} has invalid playlist/plan JSON.", str(exc))
+            continue
+
+        if not isinstance(plan, list) or not plan:
+            report.error(name, f"Schedule block {index} has an empty playlist/plan.")
+            continue
+
+        for plan_index, entry in enumerate(plan):
+            if not isinstance(entry, dict):
+                report.error(name, f"Schedule block {index}, playlist entry {plan_index} is invalid.", repr(entry))
+                continue
+
+            duration = entry.get("duration")
+            if duration is None or duration <= 0:
+                report.error(name, f"Schedule block {index}, playlist entry {plan_index} has invalid duration.", repr(entry))
+
+            entry_path = entry.get("path")
+            is_stream = entry.get("is_stream", False)
+            if not entry_path:
+                report.error(name, f"Schedule block {index}, playlist entry {plan_index} is missing a media path.")
+            elif not is_stream and not is_url(entry_path) and not is_virtual_media_reference(entry_path):
+                resolved = resolve_media_reference(entry_path)
+                if not resolved.exists():
+                    missing_media.add(str(resolved))
+
+    for missing_path in sorted(missing_media):
+        report.error(name, "Scheduled media file is missing.", missing_path)
+
+
+def validate_schedule(station: dict, report: ValidationReport):
     name = station.get("network_name", "<unnamed>")
     network_type = station.get("network_type", "standard")
-    if network_type in {"guide", "streaming"}:
+    if network_type in NO_SCHEDULE_TYPES:
         return
+
+    rows, db_error, db_path = schedule_rows(station)
+    if rows is not None:
+        validate_database_schedule(station, rows, report)
+        return
+
+    if validate_legacy_schedule(station, report):
+        return
+
+    detail = str(db_path or station.get("schedule_path") or "")
+    if db_error:
+        report.error(name, "Schedule database could not be read.", f"{db_error}: {detail}")
+    else:
+        report.error(name, "Schedule data is missing.", detail)
+
+
+def validate_legacy_catalog(station: dict, report: ValidationReport) -> bool:
+    name = station.get("network_name", "<unnamed>")
     catalog_value = station.get("catalog_path")
     if not catalog_value:
-        report.error(name, "Missing catalog_path.")
-        return
+        return False
     catalog_path = Path(catalog_value)
     if not catalog_path.exists():
-        report.error(name, "Catalog/playlist file is missing.", str(catalog_path))
-        return
+        return False
     try:
         with catalog_path.open("rb") as catalog_file:
             catalog = pickle.load(catalog_file)
     except Exception as exc:
         report.error(name, "Catalog/playlist file could not be loaded.", str(exc))
-        return
+        return True
     if not catalog:
         report.error(name, "Catalog/playlist file is empty.", str(catalog_path))
+    return True
+
+
+def validate_catalog(station: dict, report: ValidationReport):
+    name = station.get("network_name", "<unnamed>")
+    network_type = station.get("network_type", "standard")
+    if network_type in NO_CATALOG_TYPES:
+        return
+
+    count, db_error, db_path = catalog_entry_count(station)
+    if count is not None:
+        if count <= 0:
+            report.error(name, "Catalog has no entries in runtime database.", str(db_path or ""))
+        return
+
+    if validate_legacy_catalog(station, report):
+        return
+
+    detail = str(db_path or station.get("catalog_path") or "")
+    if db_error:
+        report.error(name, "Catalog database could not be read.", f"{db_error}: {detail}")
+    else:
+        report.error(name, "Catalog data is missing.", detail)
 
 
 def validate_channels() -> ValidationReport:
@@ -352,6 +495,7 @@ def validate_channels() -> ValidationReport:
         if station is None:
             continue
         station = normalize_station_config(station, server_config)
+        station["_server_config"] = server_config
         station["_config_file"] = str(path)
         stations.append(station)
 

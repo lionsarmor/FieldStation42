@@ -1,5 +1,4 @@
 import argparse
-import json
 import logging
 import select
 import shutil
@@ -12,6 +11,7 @@ import tty
 from pathlib import Path
 
 from fs42.channel_validator import validate_channels
+from fs42.channel_control import write_channel_command as write_player_channel_command
 from fs42.compiled_sync import CompiledSyncError, compiled_status, download_compiled, print_status, upload_compiled
 from fs42.config import PROJECT_ROOT, apply_cli_overrides, ensure_config_file, load_config, save_config
 from fs42.doctor import run_doctor
@@ -110,9 +110,7 @@ def first_run_setup(interactive: bool = True) -> dict:
 
 
 def write_channel_command(command: str, config: dict):
-    payload = {"command": command}
-    with open(config["channel_socket"], "w", encoding="utf-8") as channel_socket:
-        channel_socket.write(json.dumps(payload))
+    write_player_channel_command(command, channel_socket=config["channel_socket"])
 
 
 def start_process(command: list[str], log_file: Path) -> subprocess.Popen:

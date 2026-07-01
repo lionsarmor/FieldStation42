@@ -43,35 +43,26 @@ FS42 reads from `catalog/`, but the actual files still live in MEGA.
 
 Do not hand-edit these symlinks unless you are fixing something specific. Use the commands below.
 
-### `runtime/catalogs/`
+### `runtime/fs42_fluid.db`
 
-This is where the scanner saves the media catalog files.
+This is the local FS42 database/cache.
 
-These files are the expensive part. A big scan can take a long time.
+The scanner saves catalog entries here, and the scheduler saves compiled programming blocks here. This is the expensive runtime state. A big scan can take a long time.
+
+It is also the main compiled runtime artifact that gets backed up to MEGA.
+
+### `runtime/catalogs/` and `runtime/schedules/`
+
+Older portable builds used these folders for per-channel pickle files.
 
 Example:
 
 ```bash
 runtime/catalogs/actionmax.pkl
-runtime/catalogs/classicmovies.pkl
-```
-
-### `runtime/schedules/`
-
-This is where FS42 saves compiled schedules.
-
-Example:
-
-```bash
 runtime/schedules/actionmax.pkl
-runtime/schedules/classicmovies.pkl
 ```
 
-### `runtime/fs42_fluid.db`
-
-This is the local FS42 database/cache.
-
-It is also part of the compiled runtime state.
+Current builds primarily use `runtime/fs42_fluid.db`, but the launcher still understands these legacy files if they exist.
 
 ### MEGA compiled backup
 
@@ -149,7 +140,7 @@ Missing bumper folder
 Missing commercial folder
 ```
 
-If the media symlinks exist but the scanner has not run yet, validation will complain about missing files in `runtime/catalogs/` and `runtime/schedules/`. That is normal before scanning.
+If the media symlinks exist but the scanner has not run yet, validation will complain about missing catalog or schedule data in `runtime/fs42_fluid.db`. That is normal before scanning.
 
 ### Find channels in MEGA and create local symlinks
 
@@ -233,11 +224,11 @@ After scanning and building schedules, upload the finished runtime files to MEGA
 This uploads:
 
 ```bash
-runtime/catalogs/*.pkl
-runtime/schedules/*.pkl
 runtime/fs42_fluid.db
 runtime/compiled_manifest.json
 ```
+
+If legacy `runtime/catalogs/*.pkl` or `runtime/schedules/*.pkl` files exist, those are included too.
 
 To:
 
@@ -247,7 +238,7 @@ mega:FS42_MEDIA/Compiled
 
 This is the command that makes the long scan reusable on other computers.
 
-It will refuse to upload if the scanner has not created catalog files yet, or if schedules have not been built yet.
+It will refuse to upload if the scanner has not created catalog data yet, or if schedules have not been built yet.
 
 ## Downloading The Scan On Another Computer
 
@@ -257,7 +248,7 @@ On another machine, download the finished compiled cache:
 ./launch.sh --sync-compiled
 ```
 
-This pulls the latest uploaded catalogs, schedules, database, and manifest from MEGA.
+This pulls the latest uploaded database, manifest, and any legacy catalog/schedule files from MEGA.
 
 After that, the machine should not need to run the slow full scanner.
 
@@ -269,7 +260,7 @@ After that, the machine should not need to run the slow full scanner.
 
 This shows whether you have local compiled files and whether MEGA has a compiled backup.
 
-It also shows how many local catalog and schedule files exist.
+It also shows how many local DB catalog entries and schedule blocks exist.
 
 Use this when you are not sure if the cache has been uploaded yet.
 
@@ -466,7 +457,7 @@ the launcher tries to help:
 5. It validates channels.
 6. It starts the player.
 
-The compiled sync is careful by default. If you already have local compiled files but no local manifest, it will not overwrite them unless you use:
+The compiled sync is careful by default. If you already have local compiled data but no local manifest, it will not overwrite it unless you use:
 
 ```bash
 ./launch.sh --force-sync-compiled
@@ -492,7 +483,7 @@ Other computers should use:
 
 ### Do not force-sync unless you mean it
 
-This replaces local compiled files:
+This replaces local compiled data:
 
 ```bash
 ./launch.sh --force-sync-compiled
@@ -560,7 +551,7 @@ They no longer live under:
 catalog/generated/
 ```
 
-Before the scanner finishes, validation may still report missing catalog and schedule files. That is expected.
+Before the scanner finishes, validation may still report missing catalog and schedule data. That is expected.
 
 After scanning and scheduling, run:
 
