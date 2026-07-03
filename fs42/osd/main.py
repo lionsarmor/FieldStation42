@@ -79,6 +79,8 @@ class StatusDisplay(object):
     def check_status(self, socket_file=SOCKET_FILE):
         with open(socket_file, "r") as f:
             status = f.read()
+            if not status.strip():
+                return
             try:
                 status = json.loads(status)
             except:
@@ -128,6 +130,22 @@ parser.add_argument("--windowed", action="store_true", help="Render OSD in a des
 parser.add_argument("--fullscreen", action="store_true", help="Render OSD fullscreen.")
 parser.add_argument("--window-width", type=int, help="Window width for windowed OSD.")
 parser.add_argument("--window-height", type=int, help="Window height for windowed OSD.")
+parser.add_argument("--window-x", type=int, help="Window x position for windowed OSD.")
+parser.add_argument("--window-y", type=int, help="Window y position for windowed OSD.")
+window_group = parser.add_mutually_exclusive_group()
+window_group.add_argument(
+    "--combined-window",
+    dest="combined_window",
+    action="store_true",
+    default=None,
+    help="Stack the OSD over the MPV window in windowed mode.",
+)
+window_group.add_argument(
+    "--separate-osd-window",
+    dest="combined_window",
+    action="store_false",
+    help="Use a separate decorated OSD window in windowed mode.",
+)
 args = parser.parse_args()
 
 manager = StationManager()
@@ -136,12 +154,18 @@ osd_scale = float(manager.server_conf.get("osd_scale", 1.0))
 fullscreen = bool(manager.server_conf.get("fullscreen", True))
 window_width = int(manager.server_conf.get("window_width", 1280))
 window_height = int(manager.server_conf.get("window_height", 720))
+window_x = int(manager.server_conf.get("window_x", 80))
+window_y = int(manager.server_conf.get("window_y", 60))
+combined_window = bool(manager.server_conf.get("combined_window", True))
+overlay_window = (not fullscreen) and combined_window
 
 window = create_window(
     fullscreen=fullscreen,
     width=window_width,
     height=window_height,
-    resizable=not fullscreen,
+    resizable=(not fullscreen) and (not combined_window),
+    overlay=overlay_window,
+    position=(window_x, window_y) if overlay_window else None,
 )
 
 
@@ -193,22 +217,25 @@ else:
 # --------------------------
 # Main loop
 
-now = glfw.get_time()
-while not glfw.window_should_close(window):
-    glfw.wait_events_timeout(1.0 / 30.0)  # ~30 FPS, low CPU
-    now, last = glfw.get_time(), now
-    delta_time = now - last
+try:
+    now = glfw.get_time()
+    while not glfw.window_should_close(window):
+        glfw.wait_events_timeout(1.0 / 30.0)  # ~30 FPS, low CPU
+        now, last = glfw.get_time(), now
+        delta_time = now - last
 
-    clear_screen()
+        clear_screen()
 
-    for obj in objects:
-        obj.update(delta_time)
+        for obj in objects:
+            obj.update(delta_time)
 
-    # Draw objects with StatusDisplay on top
-    for obj in sorted(objects, key=lambda x: isinstance(x, StatusDisplay)):
-        obj.draw()
+        # Draw objects with StatusDisplay on top
+        for obj in sorted(objects, key=lambda x: isinstance(x, StatusDisplay)):
+            obj.draw()
 
-    glfw.swap_buffers(window)
+        glfw.swap_buffers(window)
+except KeyboardInterrupt:
+    pass
 
 # Cleanup
 glfw.terminate()

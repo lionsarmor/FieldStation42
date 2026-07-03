@@ -49,6 +49,9 @@ class StationManager(object):
                     "fullscreen": True,
                     "window_width": 1280,
                     "window_height": 720,
+                    "window_x": 80,
+                    "window_y": 60,
+                    "combined_window": True,
                     "osd_scale": 1.0,
                     "media_root": "",
                     "mega_remote": "",
@@ -59,6 +62,7 @@ class StationManager(object):
                     "compiled_schedule_dir": "runtime/schedules",
                     "compiled_remote_path": "FS42_MEDIA/Compiled",
                     "auto_sync_compiled": True,
+                    "mpv_direct_start_seek": True,
                 }
                 for key, value in load_config().items():
                     if key == "day_parts":
@@ -141,6 +145,9 @@ class StationManager(object):
                     "fullscreen",
                     "window_width",
                     "window_height",
+                    "window_x",
+                    "window_y",
+                    "combined_window",
                     "osd_scale",
                     "media_root",
                     "mega_remote",
@@ -152,6 +159,7 @@ class StationManager(object):
                     "compiled_schedule_dir",
                     "compiled_remote_path",
                     "auto_sync_compiled",
+                    "mpv_direct_start_seek",
                 ]
 
                 for key in to_check:

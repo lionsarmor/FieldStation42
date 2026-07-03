@@ -46,6 +46,25 @@ from fs42.channel_control import write_channel_command
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
 
 
+def _positive_seconds(value):
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    return seconds
+
+
+def _config_int(config, key, default):
+    try:
+        return int(config.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def update_status_socket(
     status, network_name, channel, title=None, timestamp="%Y-%m-%dT%H:%M:%S", duration=None, file_path=None, content_type=None
 ):
@@ -179,8 +198,11 @@ class StationPlayer:
 
             # if not running on trixie
             fullscreen = bool(server_conf.get("fullscreen", True))
-            width = int(server_conf.get("window_width", 1280))
-            height = int(server_conf.get("window_height", 720))
+            width = _config_int(server_conf, "window_width", 1280)
+            height = _config_int(server_conf, "window_height", 720)
+            x_pos = _config_int(server_conf, "window_x", 80)
+            y_pos = _config_int(server_conf, "window_y", 60)
+            combined_window = bool(server_conf.get("combined_window", True))
             mpv_options = {
                 "start_mpv": start_it,
                 "ipc_socket": "/tmp/mpvsocket",
@@ -192,13 +214,16 @@ class StationPlayer:
                 "hr_seek": "yes",
             }
             if not fullscreen:
+                geometry = f"{width}x{height}+{x_pos}+{y_pos}" if combined_window else f"{width}x{height}"
                 mpv_options.update(
                     {
-                        "geometry": f"{width}x{height}",
+                        "geometry": geometry,
                         "autofit": f"{width}x{height}",
-                        "border": True,
+                        "border": not combined_window,
                     }
                 )
+                if combined_window:
+                    mpv_options["force_window_position"] = True
             self.mpv = MPV(**mpv_options)
         else:
             self.mpv = mpv
@@ -441,12 +466,30 @@ class StationPlayer:
                 self._apply_vfx(datetime.datetime.now())
 
                 # self.mpv.vf = "lavfi=[]"
+                server_conf = StationManager().server_conf
+                start_seconds = _positive_seconds(current_time)
+                direct_start = (
+                    bool(server_conf.get("mpv_direct_start_seek", True))
+                    and start_seconds is not None
+                    and not is_stream
+                )
+
                 self._l.info(f"playing {resolved_file_path}")
                 self.mpv.command("playlist-clear")
-                self.mpv.play(resolved_file_path)
+                loaded_with_start = False
+                if direct_start:
+                    try:
+                        self.mpv.command("loadfile", resolved_file_path, "replace", f"start={start_seconds:.3f}")
+                        loaded_with_start = True
+                        self._l.info(f"Started directly at: {start_seconds:.3f}")
+                    except Exception as e:
+                        self._l.warning(f"Direct start seek failed, falling back to normal load: {e}")
+
+                if not loaded_with_start:
+                    self.mpv.play(resolved_file_path)
                 
 
-                timeout_seconds = StationManager().server_conf.get("video_seek_timeout", 10)
+                timeout_seconds = server_conf.get("video_seek_timeout", 10)
                 start_time = time.time()
 
                 while True:
@@ -469,12 +512,12 @@ class StationPlayer:
                         time.sleep(0.05)
 
                 # Perform seek if needed (before showing overlay)
-                if not is_stream and current_time is not None and current_time > 0:
+                if not loaded_with_start and start_seconds is not None and not is_stream:
                     try:
-                        self.mpv.command("seek", current_time, "absolute")
-                        self._l.info(f"Seeking to: {current_time}")
+                        self.mpv.command("seek", start_seconds, "absolute")
+                        self._l.info(f"Seeking to: {start_seconds}")
                     except Exception as e:
-                        self._l.error(f"Failed seeking {current_time} on {resolved_file_path}: {e}")
+                        self._l.error(f"Failed seeking {start_seconds} on {resolved_file_path}: {e}")
 
                 # Show Now Playing overlay for audio feature files
                 self._l.info(f"Media type: {media_type}, Content type: {content_type}")

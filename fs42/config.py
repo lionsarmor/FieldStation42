@@ -12,6 +12,9 @@ DEFAULT_CONFIG = {
     "fullscreen": True,
     "window_width": 1280,
     "window_height": 720,
+    "window_x": 80,
+    "window_y": 60,
+    "combined_window": True,
     "osd_scale": 1.0,
     "media_root": "",
     "mega_remote": "",
@@ -48,6 +51,7 @@ DEFAULT_CONFIG = {
     "compiled_schedule_dir": "runtime/schedules",
     "compiled_remote_path": "FS42_MEDIA/Compiled",
     "auto_sync_compiled": True,
+    "mpv_direct_start_seek": True,
     "day_parts": {
         "morning": {"start_hour": 6, "end_hour": 10},
         "daytime": {"start_hour": 10, "end_hour": 18},
@@ -284,4 +288,12 @@ def apply_cli_overrides(config: dict, args) -> dict:
         updated["window_width"] = args.window_width
     if getattr(args, "window_height", None):
         updated["window_height"] = args.window_height
+    if getattr(args, "window_x", None) is not None:
+        updated["window_x"] = args.window_x
+    if getattr(args, "window_y", None) is not None:
+        updated["window_y"] = args.window_y
+    if getattr(args, "combined_window", None) is not None:
+        updated["combined_window"] = args.combined_window
+    if getattr(args, "direct_start_seek", False):
+        updated["mpv_direct_start_seek"] = True
     return updated

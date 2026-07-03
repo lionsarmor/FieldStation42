@@ -39,6 +39,21 @@ def display_args(args) -> list[str]:
         flags.extend(["--window-width", str(args.window_width)])
     if args.window_height:
         flags.extend(["--window-height", str(args.window_height)])
+    if args.window_x is not None:
+        flags.extend(["--window-x", str(args.window_x)])
+    if args.window_y is not None:
+        flags.extend(["--window-y", str(args.window_y)])
+    if args.combined_window is True:
+        flags.append("--combined-window")
+    elif args.combined_window is False:
+        flags.append("--separate-osd-window")
+    return flags
+
+
+def player_args(args) -> list[str]:
+    flags = display_args(args)
+    if args.direct_start_seek:
+        flags.append("--direct-start-seek")
     return flags
 
 
@@ -183,6 +198,27 @@ def build_parser():
     parser.add_argument("--fullscreen", action="store_true", help="Run player and OSD fullscreen.")
     parser.add_argument("--window-width", type=int, help="Window width for --windowed.")
     parser.add_argument("--window-height", type=int, help="Window height for --windowed.")
+    parser.add_argument("--window-x", type=int, help="Window x position for windowed playback.")
+    parser.add_argument("--window-y", type=int, help="Window y position for windowed playback.")
+    window_group = parser.add_mutually_exclusive_group()
+    window_group.add_argument(
+        "--combined-window",
+        dest="combined_window",
+        action="store_true",
+        default=None,
+        help="Stack the OSD over the MPV window in windowed mode.",
+    )
+    window_group.add_argument(
+        "--separate-osd-window",
+        dest="combined_window",
+        action="store_false",
+        help="Use a separate decorated OSD window in windowed mode.",
+    )
+    parser.add_argument(
+        "--direct-start-seek",
+        action="store_true",
+        help="Ask MPV to start scheduled files at their target timestamp immediately.",
+    )
     parser.add_argument("--doctor", action="store_true", help="Run health checks and exit.")
     parser.add_argument("--validate", action="store_true", help="Validate channels and exit.")
     parser.add_argument("--strict", action="store_true", help="Treat validation warnings as failures.")
@@ -293,7 +329,7 @@ def main() -> int:
             return validation_exit
 
     python = sys.executable
-    player_command = [python, str(PROJECT_ROOT / "field_player.py"), *display_args(args)]
+    player_command = [python, str(PROJECT_ROOT / "field_player.py"), *player_args(args)]
     if args.transition:
         player_command.extend(["--transition", args.transition])
     if args.verbose:

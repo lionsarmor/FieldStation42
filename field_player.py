@@ -376,6 +376,35 @@ if __name__ == "__main__":
         type=int,
         help="Window height to use with --windowed or fullscreen=false config.",
     )
+    parser.add_argument(
+        "--window-x",
+        type=int,
+        help="Window x position to use with --windowed or fullscreen=false config.",
+    )
+    parser.add_argument(
+        "--window-y",
+        type=int,
+        help="Window y position to use with --windowed or fullscreen=false config.",
+    )
+    window_group = parser.add_mutually_exclusive_group()
+    window_group.add_argument(
+        "--combined-window",
+        dest="combined_window",
+        action="store_true",
+        default=None,
+        help="Place MPV where the OSD overlay will be stacked in windowed mode.",
+    )
+    window_group.add_argument(
+        "--separate-osd-window",
+        dest="combined_window",
+        action="store_false",
+        help="Use a normal decorated MPV window in windowed mode.",
+    )
+    parser.add_argument(
+        "--direct-start-seek",
+        action="store_true",
+        help="Ask MPV to start scheduled files at their target timestamp immediately.",
+    )
     args = parser.parse_args()
 
     if args.verbose:

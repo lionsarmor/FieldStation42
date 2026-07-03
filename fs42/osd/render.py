@@ -141,7 +141,7 @@ def load_texture(path):
 
     return texture, width, height
 
-def create_window(fullscreen=True, width=1280, height=720, resizable=False):
+def create_window(fullscreen=True, width=1280, height=720, resizable=False, overlay=False, position=None):
     # --------------------------
     # Init GLFW and OpenGL
     if not glfw.init():
@@ -156,12 +156,15 @@ def create_window(fullscreen=True, width=1280, height=720, resizable=False):
     window_height = mode.size.height if fullscreen else height
 
     glfw.window_hint(glfw.TRANSPARENT_FRAMEBUFFER, glfw.TRUE)
-    glfw.window_hint(glfw.DECORATED, glfw.FALSE if fullscreen else glfw.TRUE)
-    glfw.window_hint(glfw.FLOATING, glfw.TRUE if fullscreen else glfw.FALSE)
-    glfw.window_hint(glfw.FOCUSED, glfw.TRUE)
+    undecorated = fullscreen or overlay
+    glfw.window_hint(glfw.DECORATED, glfw.FALSE if undecorated else glfw.TRUE)
+    glfw.window_hint(glfw.FLOATING, glfw.TRUE if undecorated else glfw.FALSE)
+    glfw.window_hint(glfw.FOCUSED, glfw.FALSE if overlay else glfw.TRUE)
     glfw.window_hint(glfw.AUTO_ICONIFY, glfw.FALSE)
     glfw.window_hint(glfw.RESIZABLE, glfw.TRUE if resizable else glfw.FALSE)
     window = glfw.create_window(window_width, window_height, "FieldStation42 OSD", monitor, None)
+    if position and not fullscreen:
+        glfw.set_window_pos(window, int(position[0]), int(position[1]))
     glfw.make_context_current(window)
     glViewport(0, 0, window_width, window_height)
     glfw.set_framebuffer_size_callback(window, lambda _window, w, h: glViewport(0, 0, w, h))
