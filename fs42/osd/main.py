@@ -21,6 +21,9 @@ sys.path.insert(0, str(project_root))
 from fs42.station_manager import StationManager
 from fs42.channel_control import write_channel_command
 from fs42.config import apply_cli_overrides
+from fs42.process_wipe import wipe_runtime_processes
+from fs42.window_titles import OSD_WINDOW_TITLE
+from fs42.x11_focus import keep_window_above_by_title, keep_window_above_by_title_async
 from fs42.osd.content_classifier import (
     ContentClassifier,
     ContentType,
@@ -157,7 +160,7 @@ window_height = int(manager.server_conf.get("window_height", 720))
 window_x = int(manager.server_conf.get("window_x", 80))
 window_y = int(manager.server_conf.get("window_y", 60))
 combined_window = bool(manager.server_conf.get("combined_window", True))
-overlay_window = (not fullscreen) and combined_window
+overlay_window = fullscreen or ((not fullscreen) and combined_window)
 
 window = create_window(
     fullscreen=fullscreen,
@@ -176,9 +179,20 @@ def key_callback(window, key, scancode, action, mods):
         write_channel_command("up", channel_socket=manager.server_conf["channel_socket"])
     elif key == glfw.KEY_DOWN:
         write_channel_command("down", channel_socket=manager.server_conf["channel_socket"])
+    elif key == glfw.KEY_ESCAPE:
+        write_channel_command("exit", channel_socket=manager.server_conf["channel_socket"])
+        wipe_runtime_processes(stop_units=True, stop_player_unit=True)
+        glfw.set_window_should_close(window, True)
 
 
 glfw.set_key_callback(window, key_callback)
+if overlay_window:
+    keep_window_above_by_title_async(
+        OSD_WINDOW_TITLE,
+        attempts=30,
+        delay_seconds=0.2,
+        remove_fullscreen=fullscreen,
+    )
 
 if CONFIG_FILE_PATH.exists():
     with open(CONFIG_FILE_PATH, "r") as f:
@@ -219,10 +233,19 @@ else:
 
 try:
     now = glfw.get_time()
+    last_raise = 0.0
     while not glfw.window_should_close(window):
         glfw.wait_events_timeout(1.0 / 30.0)  # ~30 FPS, low CPU
         now, last = glfw.get_time(), now
         delta_time = now - last
+        if overlay_window and now - last_raise >= 1.0:
+            keep_window_above_by_title(
+                OSD_WINDOW_TITLE,
+                attempts=1,
+                delay_seconds=0,
+                remove_fullscreen=fullscreen,
+            )
+            last_raise = now
 
         clear_screen()
 

@@ -6,9 +6,14 @@ import tempfile
 import sqlite3
 import json
 from PySide6.QtWidgets import QApplication, QWidget
-from PySide6.QtGui import QColor, QPainter, QFont, QLinearGradient, QFontMetrics
+from PySide6.QtGui import QColor, QPainter, QFont, QLinearGradient, QFontMetrics, QShortcut, QKeySequence
 from PySide6.QtCore import Qt, QRect
 from pathlib import Path
+
+from fs42.overlay.geometry import window_rect_from_geometry
+from fs42.channel_control import write_channel_command
+from fs42.station_manager import StationManager
+from fs42.window_titles import NOW_PLAYING_WINDOW_TITLE
 
 
 class SingleApplication(QApplication):
@@ -61,18 +66,24 @@ class SingleApplication(QApplication):
 
 
 class NowPlayingWindow(QWidget):
-    def __init__(self, file_path, db_path, parent=None):
+    def __init__(self, file_path, db_path, parent=None, geometry=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowTitle(NOW_PLAYING_WINDOW_TITLE)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self.setCursor(Qt.BlankCursor)  # Hide the mouse cursor
+        self._exit_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._exit_shortcut.setContext(Qt.ApplicationShortcut)
+        self._exit_shortcut.activated.connect(self.request_player_exit)
 
-        # Make it fullscreen and get screen dimensions
+        # Cover the whole screen by default; shrink to the player's own rect
+        # when running windowed with combined_window.
         screen = QApplication.primaryScreen()
         if screen:
-            screen_rect = screen.geometry()
-            self.setGeometry(screen_rect)
-            screen_height = screen_rect.height()
+            rect = window_rect_from_geometry(screen.geometry(), geometry)
+            self.setGeometry(rect)
+            screen_height = rect.height()
         else:
             screen_height = 1080  # Default fallback
 
@@ -107,6 +118,16 @@ class NowPlayingWindow(QWidget):
 
         # Get metadata from database
         self.metadata = self._get_metadata(file_path, db_path)
+
+    def request_player_exit(self):
+        write_channel_command(
+            "exit",
+            channel_socket=StationManager().server_conf["channel_socket"],
+        )
+        try:
+            os.kill(os.getppid(), signal.SIGINT)
+        except OSError:
+            pass
 
     def _get_metadata(self, file_path, db_path):
         """Query the file_meta table for audio metadata"""
@@ -245,7 +266,7 @@ def signal_handler(sig, frame):
     QApplication.quit()
 
 
-def run_now_playing_app(file_path, db_path):
+def run_now_playing_app(file_path, db_path, geometry=None):
     """Run the now playing overlay application"""
 
     # Set up signal handler for Ctrl+C
@@ -254,18 +275,18 @@ def run_now_playing_app(file_path, db_path):
     # Use regular QApplication - process lifecycle is managed by station_player
     app = QApplication(sys.argv)
 
-    window = NowPlayingWindow(file_path, db_path)
+    window = NowPlayingWindow(file_path, db_path, geometry=geometry)
     window.show()
 
     sys.exit(app.exec())
 
 
-def run_now_playing(file_path, db_path):
+def run_now_playing(file_path, db_path, geometry=None):
     """Start the now playing overlay in a separate process"""
     def now_playing_process():
-        run_now_playing_app(file_path, db_path)
+        run_now_playing_app(file_path, db_path, geometry)
 
-    process = multiprocessing.Process(target=now_playing_process)
+    process = multiprocessing.Process(target=now_playing_process, daemon=True)
     process.start()
     return process
 

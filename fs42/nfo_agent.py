@@ -6,6 +6,8 @@ _logger = logging.getLogger("NFOAgent")
 
 MAX_NFO_LINES = 5
 
+DEFAULT_SHOW_SECONDS = 10
+
 _OVERLAY_DEFAULTS = {
     "overlay_effect": "outline",
     "overlay_offset_px": 2,
@@ -18,6 +20,7 @@ _OVERLAY_DEFAULTS = {
     "overlay_body_weight": "normal",
     "overlay_type": "normal",
     "overlay_fade_duration_ms": 600,
+    "overlay_show_seconds": DEFAULT_SHOW_SECONDS,
 }
 
 
@@ -39,16 +42,16 @@ class NFOData:
         return self.lines[2] if len(self.lines) > 2 else ""
 
 
-DEFAULT_SHOW_SECONDS = 10
-
-
-def _run_overlay_app(lines, play_duration, show_seconds, overlay_cfg):
+def _run_overlay_app(lines, play_duration, show_seconds, overlay_cfg, geometry=None):
 
     import sys
     import signal
     from PySide6.QtWidgets import QApplication, QWidget
     from PySide6.QtGui import QColor, QPainter, QFont, QFontMetrics, QFontDatabase
     from PySide6.QtCore import Qt, QTimer
+
+    from fs42.overlay.geometry import window_rect_from_geometry
+    from fs42.window_titles import NFO_WINDOW_TITLE
 
     def _qt_weight(weight_str):
         return QFont.Bold if weight_str == "bold" else QFont.Normal
@@ -59,17 +62,19 @@ def _run_overlay_app(lines, play_duration, show_seconds, overlay_cfg):
             self.setWindowFlags(
                 Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
             )
+            self.setWindowTitle(NFO_WINDOW_TITLE)
             self.setAttribute(Qt.WA_TranslucentBackground)
             self.setAttribute(Qt.WA_NoSystemBackground)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents)
             self.setAutoFillBackground(False)
             self.setStyleSheet("background: transparent;")
             self.setCursor(Qt.BlankCursor)
 
             screen = QApplication.primaryScreen()
             if screen:
-                screen_rect = screen.geometry()
-                self.setGeometry(screen_rect)
-                screen_height = screen_rect.height()
+                rect = window_rect_from_geometry(screen.geometry(), geometry)
+                self.setGeometry(rect)
+                screen_height = rect.height()
             else:
                 screen_height = 1080
 
@@ -322,15 +327,28 @@ class NFOAgent:
             return None
 
     @staticmethod
-    def show_overlay(nfo_data, play_duration=None, show_seconds=DEFAULT_SHOW_SECONDS):
+    def _load_window_geometry():
+        try:
+            from fs42.station_manager import StationManager
+            from fs42.config import resolve_window_geometry
+            return resolve_window_geometry(StationManager().server_conf)
+        except Exception as e:
+            _logger.warning(f"Could not load window geometry from StationManager: {e}")
+            return None
+
+    @staticmethod
+    def show_overlay(nfo_data, play_duration=None, show_seconds=None):
 
         if nfo_data is None:
             return None
         try:
             overlay_cfg = NFOAgent._load_overlay_config()
+            if show_seconds is None:
+                show_seconds = overlay_cfg["overlay_show_seconds"]
+            geometry = NFOAgent._load_window_geometry()
             process = multiprocessing.Process(
                 target=_run_overlay_app,
-                args=(nfo_data.lines, play_duration, show_seconds, overlay_cfg),
+                args=(nfo_data.lines, play_duration, show_seconds, overlay_cfg, geometry),
                 daemon=True,
             )
             process.start()

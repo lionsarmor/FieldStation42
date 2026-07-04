@@ -150,10 +150,13 @@ def create_window(fullscreen=True, width=1280, height=720, resizable=False, over
     # TODO: figure out which monitor to use
     # should be the one that mpv is currently on....
 
-    monitor = glfw.get_primary_monitor() if fullscreen else None
-    mode = glfw.get_video_mode(glfw.get_primary_monitor())
+    primary_monitor = glfw.get_primary_monitor()
+    monitor = primary_monitor if fullscreen and not overlay else None
+    mode = glfw.get_video_mode(primary_monitor)
     window_width = mode.size.width if fullscreen else width
     window_height = mode.size.height if fullscreen else height
+    if fullscreen and overlay:
+        position = glfw.get_monitor_pos(primary_monitor)
 
     glfw.window_hint(glfw.TRANSPARENT_FRAMEBUFFER, glfw.TRUE)
     undecorated = fullscreen or overlay
@@ -163,7 +166,7 @@ def create_window(fullscreen=True, width=1280, height=720, resizable=False, over
     glfw.window_hint(glfw.AUTO_ICONIFY, glfw.FALSE)
     glfw.window_hint(glfw.RESIZABLE, glfw.TRUE if resizable else glfw.FALSE)
     window = glfw.create_window(window_width, window_height, "FieldStation42 OSD", monitor, None)
-    if position and not fullscreen:
+    if position and monitor is None:
         glfw.set_window_pos(window, int(position[0]), int(position[1]))
     glfw.make_context_current(window)
     glViewport(0, 0, window_width, window_height)

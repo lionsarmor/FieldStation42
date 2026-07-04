@@ -2,6 +2,7 @@ import os
 import sys
 import datetime
 import glob
+import signal
 
 sys.path.append(os.getcwd())
 
@@ -9,6 +10,9 @@ import tkinter as tk  # import Tkinter
 from PIL import Image, ImageTk
 from fs42.guide_builder import GuideBuilder
 from fs42.station_manager import StationManager
+from fs42.window_titles import GUIDE_WINDOW_TITLE
+from fs42.channel_control import write_channel_command
+from fs42.x11_focus import force_focus_by_title_async
 
 
 class GuideWindowConf:
@@ -391,7 +395,8 @@ class GuideApp(tk.Tk):
         print(f"2. Your screen is {self.winfo_screenheight()} pixels tall")
         print("3. All humans should be treated with dignity.")
 
-        self.title("FieldStation42 Guide")
+        self.title(GUIDE_WINDOW_TITLE)
+        self.bind_channel_key_controls()
 
         # set defaults, just in case
         if "width" not in user_conf:
@@ -410,13 +415,25 @@ class GuideApp(tk.Tk):
             print("Setting final geometry: ", f"{user_conf['width']}x{user_conf['height']}+0+0")
             self.geometry(f"{user_conf['width']}x{user_conf['height']}+0+0")
         else:
-            x = (self.winfo_screenwidth() - user_conf['width']) // 2
-            y = (self.winfo_screenheight() - user_conf['height']) // 2
+            # use the player's own window position when we've been told it
+            # (combined_window mode) so the guide lands in the same spot
+            # instead of centering itself independently on the screen
+            if "x" in user_conf and "y" in user_conf:
+                x = user_conf["x"]
+                y = user_conf["y"]
+            else:
+                x = (self.winfo_screenwidth() - user_conf['width']) // 2
+                y = (self.winfo_screenheight() - user_conf['height']) // 2
             print("Setting final geometry: ", f"{user_conf['width']}x{user_conf['height']}+{x}+{y}")
             self.geometry(f"{user_conf['width']}x{user_conf['height']}+{x}+{y}")
 
         # Make cursor invisible
         self.config(cursor="none")
+
+        # overrideredirect windows bypass the window manager entirely, so it
+        # never hands them keyboard focus on its own - claim it explicitly
+        # or channel/exit key bindings silently receive nothing.
+        force_focus_by_title_async(GUIDE_WINDOW_TITLE)
 
         merge_conf = GuideWindowConf(w=user_conf["width"], h=user_conf["height"])
 
@@ -428,6 +445,27 @@ class GuideApp(tk.Tk):
         # self.resizable(False, False)
         self.after(1000, self.tick)
         self.queue = queue
+
+    def bind_channel_key_controls(self):
+        for key_event, command in (("<Up>", "up"), ("<Down>", "down")):
+            self.bind_all(
+                key_event,
+                lambda event, command=command: write_channel_command(
+                    command,
+                    channel_socket=StationManager().server_conf["channel_socket"],
+                ),
+            )
+        self.bind_all("<Escape>", self.request_player_exit)
+
+    def request_player_exit(self, event=None):
+        write_channel_command(
+            "exit",
+            channel_socket=StationManager().server_conf["channel_socket"],
+        )
+        try:
+            os.kill(os.getppid(), signal.SIGINT)
+        except OSError:
+            pass
 
     def get_conf(self):
         return self.conf

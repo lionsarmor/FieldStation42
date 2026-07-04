@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import select
 import shutil
 import signal
@@ -18,6 +19,7 @@ from fs42.doctor import run_doctor
 from fs42.logging_setup import setup_logging
 from fs42.media_links import discover_channels, sync_links_from_configs
 from fs42.mega import MegaError, guess_mega_remote, maybe_set_xdg_runtime_dir, mount_mega
+from fs42.process_wipe import wipe_runtime_processes
 
 
 RUNTIME_ASSETS = {
@@ -135,6 +137,7 @@ def start_process(command: list[str], log_file: Path) -> subprocess.Popen:
 
 
 def cleanup(processes: list[subprocess.Popen]):
+    logger = logging.getLogger("Launcher")
     for process in processes:
         if process.poll() is None:
             try:
@@ -149,12 +152,14 @@ def cleanup(processes: list[subprocess.Popen]):
         if process.poll() is None:
             process.terminate()
 
+    wipe_runtime_processes(logger=logger)
+
 
 def keyboard_loop(processes: list[subprocess.Popen], config: dict):
     print()
     print("FS42 Running")
     print("UP/DOWN arrows = channel change")
-    print("Ctrl+C = stop everything")
+    print("ESC or Ctrl+C = stop everything")
     print()
 
     if not sys.stdin.isatty():
@@ -169,15 +174,26 @@ def keyboard_loop(processes: list[subprocess.Popen], config: dict):
             readable, _, _ = select.select([sys.stdin], [], [], 0.2)
             if not readable:
                 continue
-            key = sys.stdin.read(1)
+            key = os.read(sys.stdin.fileno(), 1).decode(errors="ignore")
             if key == "\x1b":
-                sequence = sys.stdin.read(2)
+                sequence = ""
+                deadline = time.time() + 0.1
+                while len(sequence) < 2:
+                    remaining = max(0, deadline - time.time())
+                    readable, _, _ = select.select([sys.stdin], [], [], remaining)
+                    if not readable:
+                        break
+                    sequence += os.read(sys.stdin.fileno(), 1).decode(errors="ignore")
+
                 if sequence == "[A":
                     print("Channel up")
                     write_channel_command("up", config)
                 elif sequence == "[B":
                     print("Channel down")
                     write_channel_command("down", config)
+                elif sequence == "":
+                    write_channel_command("exit", config)
+                    raise KeyboardInterrupt
             elif key == "\x03":
                 raise KeyboardInterrupt
     finally:

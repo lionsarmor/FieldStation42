@@ -13,3 +13,4 @@ jsonschema
 requests
 mutagen
 evdev
+python-xlib

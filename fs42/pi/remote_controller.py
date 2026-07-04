@@ -9,6 +9,12 @@ import sys
 import time
 import json
 import argparse
+from pathlib import Path
+
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+from fs42.process_wipe import wipe_runtime_processes
 
 
 # ======================================
@@ -367,6 +373,21 @@ def end_pressed():
         print(f"Stop error: {e}")
 
 
+def exit_pressed():
+    """Handle esc key press - fully shut down FieldStation42 (mpv, OSD,
+    web/guide windows, API server) before this listener exits."""
+    try:
+        response = requests.get(f'{FS42_BASE_URL}/player/commands/wipe', timeout=2)
+        if response.ok:
+            print("Sent wipe command to FieldStation42")
+        else:
+            print("Wipe command failed")
+    except Exception as e:
+        print(f"Wipe command error: {e}")
+
+    wipe_runtime_processes(stop_units=True, stop_player_unit=True)
+
+
 def toggle_services():
     """Toggle FieldStation42 services on/off - true power button behavior"""
     if not should_allow_press('power_stop'):
@@ -575,6 +596,7 @@ def handle_key_name(key_name):
                     end_pressed()
             elif function_name == 'exit':
                 print("Exiting remote controller...")
+                exit_pressed()
                 return False
             break
 

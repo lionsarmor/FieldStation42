@@ -4,9 +4,14 @@ import multiprocessing
 import os
 import tempfile
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout
-from PySide6.QtGui import QPixmap, QColor, QPaintEvent, QPainter, QFont, QFontMetrics, QLinearGradient, QPen
+from PySide6.QtGui import QPixmap, QColor, QPaintEvent, QPainter, QFont, QFontMetrics, QLinearGradient, QPen, QShortcut, QKeySequence
 from PySide6.QtCore import QTimer, Qt, QPointF, QSharedMemory, QRect
 from pathlib import Path
+
+from fs42.overlay.geometry import window_rect_from_geometry
+from fs42.channel_control import write_channel_command
+from fs42.station_manager import StationManager
+from fs42.window_titles import TICKER_WINDOW_TITLE
 
 
 class SingleApplication(QApplication):
@@ -59,17 +64,22 @@ class SingleApplication(QApplication):
 
 
 class TickerWindow(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, geometry=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowTitle(TICKER_WINDOW_TITLE)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        
-        # Make it fullscreen instead of fixed size
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._exit_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._exit_shortcut.setContext(Qt.ApplicationShortcut)
+        self._exit_shortcut.activated.connect(self.request_player_exit)
+
+        # Cover the whole screen by default; shrink to the player's own rect
+        # when running windowed with combined_window (see window_rect_from_geometry).
         screen = QApplication.primaryScreen()
         if screen:
-            screen_rect = screen.geometry()
-            self.setGeometry(screen_rect)
-        
+            self.setGeometry(window_rect_from_geometry(screen.geometry(), geometry))
+
         # Ticker content dimensions
         self.ticker_width = 600
         self.ticker_height = 100
@@ -145,6 +155,16 @@ class TickerWindow(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.scroll_text)
         self.timer.start(50)  
+
+    def request_player_exit(self):
+        write_channel_command(
+            "exit",
+            channel_socket=StationManager().server_conf["channel_socket"],
+        )
+        try:
+            os.kill(os.getppid(), signal.SIGINT)
+        except OSError:
+            pass
     
     def load_fs42_logo(self):
         """Load FieldStation42 logo if available"""
@@ -297,36 +317,36 @@ def signal_handler(sig, frame):
     QApplication.quit()
 
 
-def run_ticker_app(text, title="FS42", style="fieldstation", iterations=2):
+def run_ticker_app(text, title="FS42", style="fieldstation", iterations=2, geometry=None):
     """Run the ticker application with specified parameters"""
     print("Running news ticker window...")
-    
+
     # Set up signal handler for Ctrl+C
     signal.signal(signal.SIGINT, signal_handler)
-    
+
     app = SingleApplication(sys.argv, "FS42_Ticker_SingleInstance")
-    
+
     if app.is_running():
         print("Ticker is already running!")
         sys.exit(1)
-    
-    window = TickerWindow()
+
+    window = TickerWindow(geometry=geometry)
     window.show_message(text, title, style, iterations)
     window.show()
-    
+
     timer = QTimer()
     timer.start(500)
     timer.timeout.connect(lambda: None)
-    
+
     sys.exit(app.exec())
 
 
-def run_ticker(text, title="FS42", style="fieldstation", iterations=2):
+def run_ticker(text, title="FS42", style="fieldstation", iterations=2, geometry=None):
     """Start the ticker in a separate process"""
     def ticker_process():
-        run_ticker_app(text, title, style, iterations)
-    
-    process = multiprocessing.Process(target=ticker_process)
+        run_ticker_app(text, title, style, iterations, geometry)
+
+    process = multiprocessing.Process(target=ticker_process, daemon=True)
     process.start()
     return process
 

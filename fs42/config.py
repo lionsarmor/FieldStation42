@@ -52,6 +52,9 @@ DEFAULT_CONFIG = {
     "compiled_remote_path": "FS42_MEDIA/Compiled",
     "auto_sync_compiled": True,
     "mpv_direct_start_seek": True,
+    "mpv_hr_seek": False,
+    "mpv_startup_wait_seconds": 1.0,
+    "failed_channel_retry_seconds": 1,
     "day_parts": {
         "morning": {"start_hour": 6, "end_hour": 10},
         "daytime": {"start_hour": 10, "end_hour": 18},
@@ -276,6 +279,27 @@ def day_parts_to_ranges(day_parts: dict) -> dict:
             hour += 1
         converted[key] = hours
     return converted
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_window_geometry(server_conf: dict) -> dict:
+    """Shared fullscreen/width/height/x/y resolution for every window FS42
+    opens (mpv, guide, web, OSD overlays) so they can be kept in sync."""
+    fullscreen = bool(server_conf.get("fullscreen", True))
+    geometry = {"fullscreen": fullscreen, "combined_window": bool(server_conf.get("combined_window", True))}
+    if not fullscreen:
+        geometry["width"] = _safe_int(server_conf.get("window_width", 1280), 1280)
+        geometry["height"] = _safe_int(server_conf.get("window_height", 720), 720)
+        if geometry["combined_window"]:
+            geometry["x"] = _safe_int(server_conf.get("window_x", 80), 80)
+            geometry["y"] = _safe_int(server_conf.get("window_y", 60), 60)
+    return geometry
 
 
 def apply_cli_overrides(config: dict, args) -> dict:

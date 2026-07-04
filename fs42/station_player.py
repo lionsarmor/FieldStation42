@@ -6,10 +6,9 @@ import time
 import datetime
 import json
 import os
+import signal
 import glob
 import random
-import logging
-import time
 from pathlib import Path
 from python_mpv_jsonipc import MPV
 
@@ -40,8 +39,10 @@ from fs42.liquid_manager import LiquidManager, PlayPoint, ScheduleNotFound, Sche
 from fs42.liquid_schedule import LiquidSchedule
 from fs42.station_manager import StationManager
 from fs42.slot_reader import SlotReader
-from fs42.config import resolve_media_path, resolve_project_path
+from fs42.config import resolve_media_path, resolve_project_path, resolve_window_geometry
 from fs42.channel_control import write_channel_command
+from fs42.window_titles import PLAYER_WINDOW_TITLE
+from fs42.x11_focus import force_focus_by_title_async
 
 logging.basicConfig(format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO)
 
@@ -58,11 +59,15 @@ def _positive_seconds(value):
     return seconds
 
 
-def _config_int(config, key, default):
+def _config_float(config, key, default):
     try:
-        return int(config.get(key, default))
+        return float(config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _mpv_bool(value):
+    return "yes" if bool(value) else "no"
 
 
 def update_status_socket(
@@ -105,6 +110,8 @@ class PlayerOutcome:
 
 
 class StationPlayer:
+    WINDOW_TITLE = PLAYER_WINDOW_TITLE
+
     MPV_RUNTIME_COMMANDS = {
         "toggle_subtitles": ("cycle", "sub-visibility"),
         "cycle_subtitles": ("cycle", "sub"),
@@ -197,24 +204,27 @@ class StationPlayer:
             # command on client: mpv --input-ipc-server=/tmp/mpvsocket --idle --force-window 
 
             # if not running on trixie
-            fullscreen = bool(server_conf.get("fullscreen", True))
-            width = _config_int(server_conf, "window_width", 1280)
-            height = _config_int(server_conf, "window_height", 720)
-            x_pos = _config_int(server_conf, "window_x", 80)
-            y_pos = _config_int(server_conf, "window_y", 60)
-            combined_window = bool(server_conf.get("combined_window", True))
+            geometry_conf = resolve_window_geometry(server_conf)
+            fullscreen = geometry_conf["fullscreen"]
+            combined_window = geometry_conf["combined_window"]
             mpv_options = {
                 "start_mpv": start_it,
                 "ipc_socket": "/tmp/mpvsocket",
                 "input_default_bindings": False,
+                "title": self.WINDOW_TITLE,
                 "fs": fullscreen,
                 "idle": True,
                 "force_window": True,
                 "script_opts": "osc-idlescreen=no",
-                "hr_seek": "yes",
+                "hr_seek": _mpv_bool(server_conf.get("mpv_hr_seek", False)),
             }
             if not fullscreen:
-                geometry = f"{width}x{height}+{x_pos}+{y_pos}" if combined_window else f"{width}x{height}"
+                width = geometry_conf["width"]
+                height = geometry_conf["height"]
+                if combined_window:
+                    geometry = f"{width}x{height}+{geometry_conf['x']}+{geometry_conf['y']}"
+                else:
+                    geometry = f"{width}x{height}"
                 mpv_options.update(
                     {
                         "geometry": geometry,
@@ -225,6 +235,7 @@ class StationPlayer:
                 if combined_window:
                     mpv_options["force_window_position"] = True
             self.mpv = MPV(**mpv_options)
+            force_focus_by_title_async(self.WINDOW_TITLE)
         else:
             self.mpv = mpv
 
@@ -244,6 +255,19 @@ class StationPlayer:
         self._pending_response = None
         self.bind_channel_key_controls()
 
+    def _stop_current_load(self):
+        try:
+            self.mpv.command("stop")
+        except Exception as exc:
+            self._l.debug(f"Could not stop current MPV load: {exc}")
+
+    def _child_window_config(self, config):
+        child_config = dict(config)
+        geometry = resolve_window_geometry(StationManager().server_conf)
+        if not geometry["fullscreen"]:
+            child_config.update(geometry)
+        return child_config
+
     def bind_channel_key_controls(self):
         if not hasattr(self.mpv, "bind_key_press"):
             return
@@ -259,6 +283,18 @@ class StationPlayer:
                 )
             except Exception as exc:
                 self._l.warning(f"Could not bind MPV {key_name} key for channel {command}: {exc}")
+
+        try:
+            self.mpv.bind_key_press("ESC", self._exit_from_keypress)
+        except Exception as exc:
+            self._l.warning(f"Could not bind MPV ESC key for shutdown: {exc}")
+
+    def _exit_from_keypress(self):
+        write_channel_command(
+            "exit",
+            channel_socket=StationManager().server_conf["channel_socket"],
+        )
+        os.kill(os.getpid(), signal.SIGINT)
 
     def load_up(self):
         start_time = time.perf_counter()
@@ -326,8 +362,9 @@ class StationPlayer:
         # Start new overlay
         try:
             from fs42.overlay.now_playing import run_now_playing
-            db_path = StationManager().server_conf["db_path"]
-            self.now_playing_process = run_now_playing(file_path, db_path)
+            server_conf = StationManager().server_conf
+            db_path = server_conf["db_path"]
+            self.now_playing_process = run_now_playing(file_path, db_path, geometry=resolve_window_geometry(server_conf))
             self._l.info(f"Started Now Playing overlay for {file_path}")
         except Exception as e:
             self._l.error(f"Failed to start Now Playing overlay: {e}")
@@ -475,6 +512,7 @@ class StationPlayer:
                 )
 
                 self._l.info(f"playing {resolved_file_path}")
+                self._stop_current_load()
                 self.mpv.command("playlist-clear")
                 loaded_with_start = False
                 if direct_start:
@@ -489,32 +527,45 @@ class StationPlayer:
                     self.mpv.play(resolved_file_path)
                 
 
-                timeout_seconds = server_conf.get("video_seek_timeout", 10)
+                startup_wait_seconds = max(
+                    0.0,
+                    _config_float(server_conf, "mpv_startup_wait_seconds", 1.0),
+                )
                 start_time = time.time()
+                playback_ready = False
 
-                while True:
+                while time.time() - start_time < startup_wait_seconds:
                     try:
                         if self.mpv.time_pos is not None:
+                            playback_ready = True
                             break
-                        if time.time() - start_time > timeout_seconds:
-                            self._l.error(f"Timeout waiting for playback to start on {resolved_file_path}")
+                        response = self.input_check_fn()
+                        if response:
+                            if self.handle_runtime_command_outcome(response):
+                                time.sleep(0.05)
+                                continue
+                            self._pending_response = response
+                            self._l.info("Playback open interrupted by input after %.3fs", time.time() - start_time)
+                            self._stop_current_load()
                             return False
-                        if is_stream:
-                            response = self.input_check_fn()
-                            if response and not self.handle_runtime_command_outcome(response):
-                                self._pending_response = response
-                                return False
                         time.sleep(0.05)
                     except Exception as e:
-                        if time.time() - start_time > timeout_seconds:
-                            self._l.error(f"Error waiting for playback: {e}")
-                            return False
+                        self._l.debug(f"Playback startup wait still pending: {e}")
                         time.sleep(0.05)
+
+                elapsed = time.time() - start_time
+                if playback_ready:
+                    self._l.info("Playback opened in %.3fs", elapsed)
+                elif startup_wait_seconds > 0:
+                    self._l.warning(
+                        "Playback not ready after %.3fs; continuing while MPV opens in background",
+                        elapsed,
+                    )
 
                 # Perform seek if needed (before showing overlay)
                 if not loaded_with_start and start_seconds is not None and not is_stream:
                     try:
-                        self.mpv.command("seek", start_seconds, "absolute")
+                        self.mpv.command("seek", start_seconds, "absolute+keyframes")
                         self._l.info(f"Seeking to: {start_seconds}")
                     except Exception as e:
                         self._l.error(f"Failed seeking {start_seconds} on {resolved_file_path}: {e}")
@@ -672,6 +723,7 @@ class StationPlayer:
         pass
 
     def show_guide(self, guide_config):
+        guide_config = self._child_window_config(guide_config)
         # create the pipe to communicate with the guide channel
         queue = multiprocessing.Queue()
         guide_process = multiprocessing.Process(
@@ -680,6 +732,7 @@ class StationPlayer:
                 guide_config,
                 queue,
             ),
+            daemon=True,
         )
         guide_process.start()
 
@@ -746,7 +799,14 @@ class StationPlayer:
                     continue
                 self._l.info("Sending the guide channel shutdown command")
                 queue.put(GuideCommands.hide_window)
-                guide_process.join()
+                guide_process.join(timeout=2)
+                if guide_process.is_alive():
+                    self._l.warning("Guide process did not terminate gracefully, forcing termination")
+                    guide_process.terminate()
+                    guide_process.join(timeout=1)
+                if guide_process.is_alive():
+                    guide_process.kill()
+                    guide_process.join(timeout=1)
                 return response
 
         return PlayerOutcome(PlayerState.SUCCESS)
@@ -759,6 +819,8 @@ class StationPlayer:
             msg = "Web rendering requires PySide6 to be installed and configured. Please check documentation."
             return PlayerOutcome(PlayerState.EXIT_COMMAND, msg)
 
+        web_config = self._child_window_config(web_config)
+
         # create the pipe to communicate with the web channel
         self.web_queue = multiprocessing.Queue()
         self.web_process = multiprocessing.Process(
@@ -767,6 +829,7 @@ class StationPlayer:
                 web_config,
                 self.web_queue,
             ),
+            daemon=True,
         )
         self.web_process.start()
 
@@ -830,7 +893,14 @@ class StationPlayer:
                 else:
                     self._l.info("Sending the web channel shutdown command")
                     self.web_queue.put("hide_window")
-                    self.web_process.join()
+                    self.web_process.join(timeout=2)
+                    if self.web_process.is_alive():
+                        self._l.warning("Web process did not terminate gracefully, forcing termination")
+                        self.web_process.terminate()
+                        self.web_process.join(timeout=1)
+                    if self.web_process.is_alive():
+                        self.web_process.kill()
+                        self.web_process.join(timeout=1)
                     self.web_process = None
                     self.web_queue = None
                     return response
@@ -854,6 +924,12 @@ class StationPlayer:
 
     def play_slot(self, network_name, when):
         liquid = LiquidManager()
+
+        # the guide/web windows (or some other desktop window entirely) may
+        # currently hold real X11 keyboard focus - reclaim it for mpv so key
+        # bindings (channel up/down, ESC) work once we're showing normal
+        # content again.
+        force_focus_by_title_async(self.WINDOW_TITLE)
 
         try:
             play_point = liquid.get_play_point(network_name, when)

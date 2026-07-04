@@ -222,8 +222,16 @@ async def show_guide(request:Request):
 @router.post("/commands/stop")
 async def player_stop(request: Request):
     command_queue = request.app.state.player_command_queue
-    command_queue.put({"command": "exit"})
+    command_queue.put({"command": "wipe"})
     return {"status": "stopped"}
+
+
+@router.get("/commands/wipe")
+@router.post("/commands/wipe")
+async def player_wipe(request: Request):
+    command_queue = request.app.state.player_command_queue
+    command_queue.put({"command": "wipe"})
+    return {"status": "wiping"}
 
 
 async def _queue_mpv_command(request: Request, action: str):

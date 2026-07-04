@@ -45,7 +45,6 @@ class StationManager(object):
                     "server_host": "0.0.0.0",
                     "server_port": 4242,
                     "title_patterns": [],
-                    "video_seek_timeout": 10,
                     "fullscreen": True,
                     "window_width": 1280,
                     "window_height": 720,
@@ -63,6 +62,9 @@ class StationManager(object):
                     "compiled_remote_path": "FS42_MEDIA/Compiled",
                     "auto_sync_compiled": True,
                     "mpv_direct_start_seek": True,
+                    "mpv_hr_seek": False,
+                    "mpv_startup_wait_seconds": 1.0,
+                    "failed_channel_retry_seconds": 1,
                 }
                 for key, value in load_config().items():
                     if key == "day_parts":
@@ -139,7 +141,6 @@ class StationManager(object):
                     "tmdb_api_key",
                     "recall_last_channel",
                     "schedule_agent",
-                    "video_seek_timeout",
                     "overlay_conf",
                     "start_channel",
                     "fullscreen",
@@ -160,6 +161,9 @@ class StationManager(object):
                     "compiled_remote_path",
                     "auto_sync_compiled",
                     "mpv_direct_start_seek",
+                    "mpv_hr_seek",
+                    "mpv_startup_wait_seconds",
+                    "failed_channel_retry_seconds",
                 ]
 
                 for key in to_check:

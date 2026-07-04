@@ -25,8 +25,11 @@ from fs42.reception import (
     none_change_effect,
 )
 from fs42.live_schedule_agent import LiveScheduleAgent
-from fs42.config import apply_cli_overrides
+from fs42.prefetch_agent import PrefetchAgent
+from fs42.window_group import WindowGroupCoordinator
+from fs42.config import apply_cli_overrides, resolve_window_geometry
 from fs42.logging_setup import setup_logging
+from fs42.process_wipe import wipe_runtime_processes
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s", level=logging.INFO
@@ -54,7 +57,7 @@ def input_check():
             if not command:
                 return
             match command:
-                case "exit":
+                case "exit" | "wipe":
                     return PlayerOutcome(PlayerState.EXIT_COMMAND)
                 case "reload_data":
                     LiquidManager().reload_schedules()
@@ -70,7 +73,8 @@ def input_check():
                     header = q_message.get("header", None)
                     style = q_message.get("style", None)
                     iterations = q_message.get("iterations", None)
-                    run_ticker(message, header, style, iterations)
+                    geometry = resolve_window_geometry(StationManager().server_conf)
+                    run_ticker(message, header, style, iterations, geometry=geometry)
                 case "play_file":
                     file_path = q_message.get("file_path", None)
                     return PlayerOutcome(PlayerState.PLAY_FILE, file_path)
@@ -90,6 +94,12 @@ def input_check():
     if len(contents):
         with open(channel_socket, "w"):
             pass
+        try:
+            as_obj = json.loads(contents)
+        except (json.JSONDecodeError, TypeError):
+            as_obj = None
+        if isinstance(as_obj, dict) and as_obj.get("command") in {"exit", "wipe"}:
+            return PlayerOutcome(PlayerState.EXIT_COMMAND)
         return PlayerOutcome(PlayerState.CHANNEL_CHANGE, contents)
     return None
 
@@ -151,6 +161,23 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
         logger.warning("Saved channel index %d is out of range, resetting to 0", channel_index)
         channel_index = 0
 
+    channel_state = {"index": channel_index, "changed_at": time.time()}
+    prefetch_agent = PrefetchAgent(
+        manager.server_conf,
+        get_stations_fn=lambda: manager.stations,
+        get_channel_index_fn=lambda: channel_state["index"],
+        get_changed_at_fn=lambda: channel_state["changed_at"],
+    )
+    prefetch_agent.start()
+
+    window_group = None
+    geometry = resolve_window_geometry(manager.server_conf)
+    if not geometry["fullscreen"] and geometry["combined_window"]:
+        window_group = WindowGroupCoordinator()
+        window_group.start()
+    else:
+        logger.info("Window group sync not started (fullscreen or combined_window disabled)")
+
     player = StationPlayer(manager.stations[channel_index], input_check)
     if schedule_lock:
         player.schedule_lock = schedule_lock
@@ -162,8 +189,20 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
     player.load_up()
 
     def signal_handler(sig, frame):
-        logger.critical("Received sig-int signal, attempting to exit gracefully...")
-        player.shutdown()
+        logger.critical("Received shutdown signal/command, attempting to exit gracefully...")
+        try:
+            prefetch_agent.stop()
+        except Exception:
+            logger.exception("Error stopping prefetch agent during shutdown")
+        if window_group:
+            try:
+                window_group.stop()
+            except Exception:
+                logger.exception("Error stopping window group during shutdown")
+        try:
+            player.shutdown()
+        except Exception:
+            logger.exception("Error during player shutdown")
 
         update_status_socket("stopped", "", -1)
         # Signal API server to shutdown if running
@@ -171,6 +210,7 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
             shutdown_queue.put("shutdown")
         if api_proc is not None:
             api_proc.join(timeout=5)
+        wipe_runtime_processes(stop_units=True, logger=logger)
         logger.info("Shutdown completed as expected - exiting application")
         exit(0)
 
@@ -283,6 +323,8 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
                 s["channel_index"] = channel_index
             channel_conf = station_cache[channel_index]
             player.station_config = channel_conf
+            channel_state["index"] = channel_index
+            channel_state["changed_at"] = time.time()
 
             # long_change_effect(player, reception)
             transition_fn(player, reception)
@@ -295,8 +337,7 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
         elif player_state.status == PlayerState.FAILED:
             stuck_timer += 1
 
-            # only put it up once after 2 seconds of being stuck
-            if stuck_timer == 2:
+            if stuck_timer == 1:
                 stand_by = channel_conf.get("standby_image", StationManager().server_conf.get("standby_image", "runtime/standby.png"))
                 player.play_file(stand_by)
             current_title_on_stuck = player.get_current_path()
@@ -307,18 +348,22 @@ def main_loop(transition_fn, shutdown_queue=None, api_proc=None, schedule_lock=N
                 current_title_on_stuck,
             )
 
-            time.sleep(1)
+            retry_seconds = max(0.0, float(manager.server_conf.get("failed_channel_retry_seconds", 1)))
+            retry_at = time.time() + retry_seconds
             logger.critical(
-                "Player failed to start - resting for 1 second and trying again"
+                "Player failed to start - showing standby and waiting %.1fs before retry",
+                retry_seconds,
             )
 
-            # check for channel change so it doesn't stay stuck on a broken channel
-            new_state = input_check()
-            if new_state is not None:
-                player_state = new_state
-                # set skip play so outcome isn't overwritten
-                # and the channel change can be processed next loop
-                skip_play = True
+            while time.time() < retry_at:
+                new_state = input_check()
+                if new_state is not None:
+                    player_state = new_state
+                    # set skip play so outcome isn't overwritten
+                    # and the channel change can be processed next loop
+                    skip_play = True
+                    break
+                time.sleep(0.05)
         elif player_state.status == PlayerState.SUCCESS:
             stuck_timer = 0
         elif player_state.status == PlayerState.EXIT_COMMAND:
