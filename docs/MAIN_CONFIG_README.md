@@ -40,6 +40,11 @@ The `confs/main_config.json` file is optional. If it doesn't exist, FieldStation
 | `time_format` | string | `"%H:%M"` | Format for displaying times (strftime format) |
 | `date_time_format` | string | `"%Y-%m-%dT%H:%M:%S"` | Format for date/time values (strftime format) |
 | `start_mpv` | boolean | `true` | Whether to start mpv player automatically |
+| `mpv_volume` | number | `100` | MPV internal volume. Keep at 100 to let system volume control playback loudness |
+| `mpv_volume_max` | number | `100` | Maximum MPV internal volume |
+| `mpv_audio_client_name` | string | `"FieldStation42"` | Audio client name used by PulseAudio/PipeWire for the mpv stream |
+| `mpv_use_user_config` | boolean | `false` | Whether embedded mpv should load the user's mpv config files |
+| `mpv_subtitles_enabled` | boolean | `false` | Whether subtitles start visible by default |
 | `db_path` | string | `"runtime/fs42_fluid.db"` | Path to the SQLite database |
 | `normalize_titles` | boolean | `false` | Enable automatic title normalization from filenames |
 | `title_patterns` | array | `[]` | Custom regex patterns for title parsing (see below) |

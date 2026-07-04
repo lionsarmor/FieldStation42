@@ -456,6 +456,8 @@ class GuideApp(tk.Tk):
                 ),
             )
         self.bind_all("<Escape>", self.request_player_exit)
+        self.bind_all("<s>", self.toggle_subtitles)
+        self.bind_all("<S>", self.toggle_subtitles)
 
     def request_player_exit(self, event=None):
         write_channel_command(
@@ -466,6 +468,13 @@ class GuideApp(tk.Tk):
             os.kill(os.getppid(), signal.SIGINT)
         except OSError:
             pass
+
+    def toggle_subtitles(self, event=None):
+        write_channel_command(
+            "mpv_command",
+            channel_socket=StationManager().server_conf["channel_socket"],
+            action="toggle_subtitles",
+        )
 
     def get_conf(self):
         return self.conf

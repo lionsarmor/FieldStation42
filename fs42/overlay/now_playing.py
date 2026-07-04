@@ -76,6 +76,9 @@ class NowPlayingWindow(QWidget):
         self._exit_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self._exit_shortcut.setContext(Qt.ApplicationShortcut)
         self._exit_shortcut.activated.connect(self.request_player_exit)
+        self._subtitle_shortcut = QShortcut(QKeySequence(Qt.Key_S), self)
+        self._subtitle_shortcut.setContext(Qt.ApplicationShortcut)
+        self._subtitle_shortcut.activated.connect(self.toggle_subtitles)
 
         # Cover the whole screen by default; shrink to the player's own rect
         # when running windowed with combined_window.
@@ -128,6 +131,13 @@ class NowPlayingWindow(QWidget):
             os.kill(os.getppid(), signal.SIGINT)
         except OSError:
             pass
+
+    def toggle_subtitles(self):
+        write_channel_command(
+            "mpv_command",
+            channel_socket=StationManager().server_conf["channel_socket"],
+            action="toggle_subtitles",
+        )
 
     def _get_metadata(self, file_path, db_path):
         """Query the file_meta table for audio metadata"""

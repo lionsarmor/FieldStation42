@@ -126,8 +126,8 @@ def first_run_setup(interactive: bool = True) -> dict:
     return config
 
 
-def write_channel_command(command: str, config: dict):
-    write_player_channel_command(command, channel_socket=config["channel_socket"])
+def write_channel_command(command: str, config: dict, **fields):
+    write_player_channel_command(command, channel_socket=config["channel_socket"], **fields)
 
 
 def start_process(command: list[str], log_file: Path) -> subprocess.Popen:
@@ -196,6 +196,8 @@ def keyboard_loop(processes: list[subprocess.Popen], config: dict):
                     raise KeyboardInterrupt
             elif key == "\x03":
                 raise KeyboardInterrupt
+            elif key.lower() == "s":
+                write_channel_command("mpv_command", config, action="toggle_subtitles")
     finally:
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 

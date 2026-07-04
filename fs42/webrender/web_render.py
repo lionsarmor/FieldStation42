@@ -67,6 +67,10 @@ class WebRender(QMainWindow):
         shortcut.setContext(Qt.ApplicationShortcut)
         shortcut.activated.connect(self._request_player_exit)
         self._channel_shortcuts.append(shortcut)
+        shortcut = QShortcut(QKeySequence(Qt.Key_S), self)
+        shortcut.setContext(Qt.ApplicationShortcut)
+        shortcut.activated.connect(self._toggle_subtitles)
+        self._channel_shortcuts.append(shortcut)
 
     def _request_player_exit(self):
         write_channel_command(
@@ -77,6 +81,13 @@ class WebRender(QMainWindow):
             os.kill(os.getppid(), signal.SIGINT)
         except OSError:
             pass
+
+    def _toggle_subtitles(self):
+        write_channel_command(
+            "mpv_command",
+            channel_socket=StationManager().server_conf["channel_socket"],
+            action="toggle_subtitles",
+        )
 
     def navigate(self, URL: str):
         # Initialize retry tracking for new URL

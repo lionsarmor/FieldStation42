@@ -100,6 +100,9 @@ def input_check():
             as_obj = None
         if isinstance(as_obj, dict) and as_obj.get("command") in {"exit", "wipe"}:
             return PlayerOutcome(PlayerState.EXIT_COMMAND)
+        if isinstance(as_obj, dict) and as_obj.get("command") == "mpv_command":
+            action = as_obj.get("action", "")
+            return PlayerOutcome(PlayerState.SUCCESS, f"mpv_command:{action}")
         return PlayerOutcome(PlayerState.CHANNEL_CHANGE, contents)
     return None
 

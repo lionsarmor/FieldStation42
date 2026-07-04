@@ -52,6 +52,7 @@ KEY_MAPPINGS = {
     'last_channel': 'backspace', # Switch to last channel
     'mute': 'm',                 # Mute/unmute volume
     'toggle_subtitles': 'v',      # Toggle subtitle visibility in mpv
+    'toggle_subtitles_s': 's',     # Also toggle subtitle visibility with S
     'cycle_subtitles': 'j',       # Cycle subtitle tracks in mpv
     'cycle_audio': 'a',           # Cycle audio tracks in mpv
     'power_stop': 'end',         # Stop player (power button)
@@ -577,7 +578,7 @@ def handle_key_name(key_name):
                 volume_down_pressed()
             elif function_name == 'mute':
                 mute_pressed()
-            elif function_name == 'toggle_subtitles':
+            elif function_name in {'toggle_subtitles', 'toggle_subtitles_s'}:
                 mpv_command_pressed('toggle_subtitles')
             elif function_name == 'cycle_subtitles':
                 mpv_command_pressed('cycle_subtitles')

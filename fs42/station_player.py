@@ -2,11 +2,15 @@ from enum import Enum
 import logging
 
 import multiprocessing
+import threading
 import time
 import datetime
 import json
 import os
+import re
 import signal
+import shutil
+import subprocess
 import glob
 import random
 from pathlib import Path
@@ -64,6 +68,15 @@ def _config_float(config, key, default):
         return float(config.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _config_bool(config, key, default=False):
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def _mpv_bool(value):
@@ -215,8 +228,15 @@ class StationPlayer:
                 "fs": fullscreen,
                 "idle": True,
                 "force_window": True,
+                "config": _mpv_bool(_config_bool(server_conf, "mpv_use_user_config", False)),
                 "script_opts": "osc-idlescreen=no",
+                "audio_client_name": server_conf.get("mpv_audio_client_name", "FieldStation42"),
                 "hr_seek": _mpv_bool(server_conf.get("mpv_hr_seek", False)),
+                "volume": _config_float(server_conf, "mpv_volume", 100),
+                "volume_max": _config_float(server_conf, "mpv_volume_max", 100),
+                "mute": "no",
+                "sub_visibility": _mpv_bool(_config_bool(server_conf, "mpv_subtitles_enabled", False)),
+                "reset_on_next_file": "volume,mute,sub-visibility",
             }
             if not fullscreen:
                 width = geometry_conf["width"]
@@ -235,6 +255,7 @@ class StationPlayer:
                 if combined_window:
                     mpv_options["force_window_position"] = True
             self.mpv = MPV(**mpv_options)
+            self._apply_mpv_startup_settings()
             force_focus_by_title_async(self.WINDOW_TITLE)
         else:
             self.mpv = mpv
@@ -253,6 +274,7 @@ class StationPlayer:
         self.schedule_lock = None
         self._active_afx = None
         self._pending_response = None
+        self._audio_align_thread = None
         self.bind_channel_key_controls()
 
     def _stop_current_load(self):
@@ -289,12 +311,153 @@ class StationPlayer:
         except Exception as exc:
             self._l.warning(f"Could not bind MPV ESC key for shutdown: {exc}")
 
+        for key_name in ("s", "S"):
+            try:
+                self.mpv.bind_key_press(key_name, lambda: self.mpv_runtime_command("toggle_subtitles"))
+            except Exception as exc:
+                self._l.warning(f"Could not bind MPV {key_name} key for subtitles: {exc}")
+
     def _exit_from_keypress(self):
         write_channel_command(
             "exit",
             channel_socket=StationManager().server_conf["channel_socket"],
         )
         os.kill(os.getpid(), signal.SIGINT)
+
+    def _apply_mpv_startup_settings(self):
+        server_conf = StationManager().server_conf
+        settings = {
+            "volume": _config_float(server_conf, "mpv_volume", 100),
+            "volume-max": _config_float(server_conf, "mpv_volume_max", 100),
+            "mute": False,
+            "sub-visibility": _config_bool(server_conf, "mpv_subtitles_enabled", False),
+        }
+        for name, value in settings.items():
+            try:
+                self.mpv.command("set_property", name, value)
+            except Exception as exc:
+                self._l.warning(f"Could not set MPV {name}={value}: {exc}")
+
+    def _mpv_audio_client_name(self):
+        return StationManager().server_conf.get("mpv_audio_client_name") or "FieldStation42"
+
+    def _align_mpv_system_stream_volume(self, attempts=3, delay=0.25):
+        client_name = self._mpv_audio_client_name()
+        for attempt in range(attempts):
+            if self._align_wireplumber_stream_volume(client_name):
+                return True
+            if self._align_pulseaudio_stream_volume(client_name):
+                return True
+            if attempt < attempts - 1:
+                time.sleep(delay)
+        return False
+
+    def _align_mpv_system_stream_volume_async(self, attempts=20, delay=0.5):
+        existing = self._audio_align_thread
+        if existing and existing.is_alive():
+            return
+
+        self._audio_align_thread = threading.Thread(
+            target=self._align_mpv_system_stream_volume,
+            kwargs={"attempts": attempts, "delay": delay},
+            daemon=True,
+        )
+        self._audio_align_thread.start()
+
+    def _align_wireplumber_stream_volume(self, client_name):
+        if not shutil.which("wpctl"):
+            return False
+
+        try:
+            result = subprocess.run(
+                ["wpctl", "status"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            self._l.debug(f"Could not inspect WirePlumber streams: {exc}")
+            return False
+
+        stream_ids = []
+        in_streams = False
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if "Streams:" in stripped:
+                in_streams = True
+                continue
+            if in_streams and stripped.startswith(("Video", "Settings")):
+                break
+            if not in_streams or client_name not in stripped:
+                continue
+
+            match = re.match(r"[│├└─* ]*(\d+)\.\s+", stripped)
+            if match:
+                stream_ids.append(match.group(1))
+
+        for stream_id in stream_ids:
+            try:
+                subprocess.run(["wpctl", "set-volume", stream_id, "1.0"], timeout=2, check=True)
+                subprocess.run(["wpctl", "set-mute", stream_id, "0"], timeout=2, check=True)
+                self._l.info(f"Aligned {client_name} WirePlumber stream {stream_id} to 100% and unmuted")
+                return True
+            except (subprocess.SubprocessError, OSError) as exc:
+                self._l.debug(f"Could not align WirePlumber stream {stream_id}: {exc}")
+
+        return False
+
+    def _align_pulseaudio_stream_volume(self, client_name):
+        if not shutil.which("pactl"):
+            return False
+
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sink-inputs"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            self._l.debug(f"Could not inspect PulseAudio streams: {exc}")
+            return False
+
+        sink_input_ids = []
+        current_id = None
+        current_matches = False
+        for line in result.stdout.splitlines():
+            header = re.match(r"Sink Input #(\d+)", line)
+            if header:
+                if current_id and current_matches:
+                    sink_input_ids.append(current_id)
+                current_id = header.group(1)
+                current_matches = False
+                continue
+            if current_id and client_name in line:
+                current_matches = True
+
+        if current_id and current_matches:
+            sink_input_ids.append(current_id)
+
+        for sink_input_id in sink_input_ids:
+            try:
+                subprocess.run(
+                    ["pactl", "set-sink-input-volume", sink_input_id, "100%"],
+                    timeout=2,
+                    check=True,
+                )
+                subprocess.run(
+                    ["pactl", "set-sink-input-mute", sink_input_id, "0"],
+                    timeout=2,
+                    check=True,
+                )
+                self._l.info(f"Aligned {client_name} PulseAudio stream {sink_input_id} to 100% and unmuted")
+                return True
+            except (subprocess.SubprocessError, OSError) as exc:
+                self._l.debug(f"Could not align PulseAudio stream {sink_input_id}: {exc}")
+
+        return False
 
     def load_up(self):
         start_time = time.perf_counter()
@@ -525,7 +688,8 @@ class StationPlayer:
 
                 if not loaded_with_start:
                     self.mpv.play(resolved_file_path)
-                
+
+                self._apply_mpv_startup_settings()
 
                 startup_wait_seconds = max(
                     0.0,
@@ -561,6 +725,8 @@ class StationPlayer:
                         "Playback not ready after %.3fs; continuing while MPV opens in background",
                         elapsed,
                     )
+
+                self._align_mpv_system_stream_volume_async()
 
                 # Perform seek if needed (before showing overlay)
                 if not loaded_with_start and start_seconds is not None and not is_stream:
@@ -609,6 +775,8 @@ class StationPlayer:
         self.mpv.af = ""
         self.mpv.command("playlist-clear")
         self.mpv.command("loadfile", file_path, "replace")
+        self._apply_mpv_startup_settings()
+        self._align_mpv_system_stream_volume_async()
         self.mpv.loop_playlist = "inf"
         self.current_playing_file_path = file_path
 
@@ -658,6 +826,8 @@ class StationPlayer:
                 else:
                     self.mpv.command("loadfile", file_path, "append")
 
+            self._apply_mpv_startup_settings()
+            self._align_mpv_system_stream_volume_async()
             self.mpv.loop_playlist = "inf"
             self._l.info("Starting playlist playback")
 

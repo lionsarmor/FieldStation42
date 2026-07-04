@@ -183,6 +183,12 @@ def key_callback(window, key, scancode, action, mods):
         write_channel_command("exit", channel_socket=manager.server_conf["channel_socket"])
         wipe_runtime_processes(stop_units=True, stop_player_unit=True)
         glfw.set_window_should_close(window, True)
+    elif key == glfw.KEY_S:
+        write_channel_command(
+            "mpv_command",
+            channel_socket=manager.server_conf["channel_socket"],
+            action="toggle_subtitles",
+        )
 
 
 glfw.set_key_callback(window, key_callback)
