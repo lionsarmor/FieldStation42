@@ -223,9 +223,9 @@ def upload_compiled(config: dict | None = None) -> dict:
 
     db_path = cache_db_path()
     if db_path.exists():
-        run_rclone(["copyto", str(db_path), remote_join(base, "runtime/fs42_fluid.db")])
+        run_rclone(["copyto", str(db_path), remote_join(base, "runtime/fs42_fluid.db"), "--ignore-times"])
 
-    run_rclone(["copyto", str(manifest_path), remote_join(base, MANIFEST_NAME)])
+    run_rclone(["copyto", str(manifest_path), remote_join(base, MANIFEST_NAME), "--ignore-times"])
     return manifest
 
 
